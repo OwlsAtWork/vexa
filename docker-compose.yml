@@ -69,6 +69,13 @@ services:
       - DEVICE_TYPE=${DEVICE_TYPE}
       - WHISPER_LIVE_URL=ws://whisperlive-remote:9090/ws  # Direct connection to whisperlive-remote
       - ADMIN_TOKEN=${ADMIN_API_TOKEN}
+      # S3 Configuration for transcript uploads
+      - TRANSCRIPT_S3_BUCKET=${TRANSCRIPT_S3_BUCKET}
+      - AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY_ID}
+      - AWS_SECRET_ACCESS_KEY=${AWS_SECRET_ACCESS_KEY}
+      - AWS_SESSION_TOKEN=${AWS_SESSION_TOKEN}
+      - AWS_REGION=${AWS_REGION:-us-east-1}
+      - TRANSCRIPTION_COLLECTOR_URL=http://transcription-collector:8000
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
       - ../.cursor:/app/.cursor

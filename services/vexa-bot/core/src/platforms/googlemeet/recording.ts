@@ -541,34 +541,76 @@ export async function startGoogleRecording(page: Page, botConfig: BotConfig): Pr
 
             initializeGoogleSpeakerDetection(whisperLiveService, audioService, botConfigData);
 
-            // Simple single-strategy participant extraction from main video area
-            (window as any).logBot("Initializing simplified participant counting (main frame text scan)...");
+            // Improved participant extraction - only count actual participants, not UI elements
+            (window as any).logBot("Initializing improved participant counting...");
 
             const extractParticipantsFromMain = (botName: string | undefined): string[] => {
               const participants: string[] = [];
-              const mainElement = document.querySelector('main');
-              if (mainElement) {
-                const nameElements = mainElement.querySelectorAll('*');
-                nameElements.forEach((el: Element) => {
-                  const element = el as HTMLElement;
-                  const text = (element.textContent || '').trim();
-                  if (text && element.children.length === 0) {
-                    // Basic length validation only (allow numbers, parentheses, etc.)
-                    if ((text.length > 1 && text.length < 50) || (botName && text === botName)) {
-                      participants.push(text);
-                    }
+
+              // Strategy 1: Look for participant tiles with data attributes
+              const participantTiles = document.querySelectorAll('[data-participant-id], [data-self-name]');
+              participantTiles.forEach((tile: Element) => {
+                const selfName = (tile as HTMLElement).getAttribute('data-self-name');
+                if (selfName && selfName.trim()) {
+                  participants.push(selfName.trim());
+                  return;
+                }
+
+                // Try to extract name from notranslate spans within this tile
+                const nameSpan = tile.querySelector('span.notranslate');
+                if (nameSpan) {
+                  const text = (nameSpan.textContent || '').trim();
+                  if (text && text.length > 1 && text.length < 50) {
+                    participants.push(text);
+                    return;
                   }
-                });
-              }
-              const tooltips = document.querySelectorAll('main [role="tooltip"]');
-              tooltips.forEach((el: Element) => {
-                const text = (el.textContent || '').trim();
-                // Basic length validation only (allow numbers, parentheses, etc.)
-                if (text && ((text.length > 1 && text.length < 50) || (botName && text === botName))) {
-                  participants.push(text);
                 }
               });
-              return Array.from(new Set(participants));
+
+              // Strategy 2: Look in the people panel (sidebar)
+              // Google Meet shows participant names in a specific panel
+              const peoplePanelNames = document.querySelectorAll('[jsname="YPqjbf"]');
+              peoplePanelNames.forEach((el: Element) => {
+                const text = (el.textContent || '').trim();
+                if (text && text.length > 1 && text.length < 50) {
+                  // Filter out common UI text
+                  if (!text.includes('Turn') && !text.includes('More options') &&
+                      !text.includes('Raise') && !text.includes('visual') &&
+                      !text.includes('Background') && !text.includes('device') &&
+                      !text.includes('effect') && !text.includes('layout')) {
+                    participants.push(text);
+                  }
+                }
+              });
+
+              // Strategy 3: Count participant elements with specific selectors
+              const participantElements = document.querySelectorAll('div[data-participant-id][data-self-name]');
+              participantElements.forEach((el: Element) => {
+                const selfName = (el as HTMLElement).getAttribute('data-self-name');
+                if (selfName && selfName.trim()) {
+                  participants.push(selfName.trim());
+                }
+              });
+
+              // Deduplicate and filter
+              const unique = Array.from(new Set(participants));
+
+              // Final filtering: Remove obvious UI text patterns
+              return unique.filter(name => {
+                const lower = name.toLowerCase();
+                return !lower.includes('visual') &&
+                       !lower.includes('background') &&
+                       !lower.includes('device') &&
+                       !lower.includes('effect') &&
+                       !lower.includes('more option') &&
+                       !lower.includes('raise') &&
+                       !lower.includes('hand') &&
+                       !lower.includes('layout') &&
+                       !lower.includes('tile') &&
+                       !lower.includes('can\'t remove') &&
+                       !lower.includes('vert') &&
+                       !lower.includes('might still see');
+              });
             };
 
             (window as any).getGoogleMeetActiveParticipants = () => {

@@ -403,22 +403,43 @@ export async function runBot(botConfig: BotConfig): Promise<void> {// Store botC
 
   // Simple browser setup like simple-bot.js
   if (botConfig.platform === "teams") {
-    log("Using MS Edge browser for Teams platform (simple-bot.js approach)");
-    // Launch browser in headless mode with Edge channel with insecure WebSocket support
-    browserInstance = await chromium.launch({ 
-      headless: false,
-      channel: 'msedge',
-      args: [
-        '--disable-web-security',
-        '--disable-features=VizDisplayCompositor',
-        '--allow-running-insecure-content',
-        '--ignore-certificate-errors',
-        '--ignore-ssl-errors',
-        '--ignore-certificate-errors-spki-list',
-        '--disable-site-isolation-trials',
-        '--disable-features=VizDisplayCompositor'
-      ]
-    });
+    // Try MS Edge first, fallback to Chromium if Edge not available (e.g., on ARM64)
+    let useEdge = true;
+    try {
+      log("Attempting to use MS Edge browser for Teams platform...");
+      browserInstance = await chromium.launch({
+        headless: false,
+        channel: 'msedge',
+        args: [
+          '--disable-web-security',
+          '--disable-features=VizDisplayCompositor',
+          '--allow-running-insecure-content',
+          '--ignore-certificate-errors',
+          '--ignore-ssl-errors',
+          '--ignore-certificate-errors-spki-list',
+          '--disable-site-isolation-trials',
+          '--disable-features=VizDisplayCompositor'
+        ]
+      });
+      log("Successfully launched MS Edge for Teams");
+    } catch (edgeError: any) {
+      log(`MS Edge not available (${edgeError?.message || edgeError}), falling back to Chromium`);
+      useEdge = false;
+      browserInstance = await chromium.launch({
+        headless: false,
+        args: [
+          '--disable-web-security',
+          '--disable-features=VizDisplayCompositor',
+          '--allow-running-insecure-content',
+          '--ignore-certificate-errors',
+          '--ignore-ssl-errors',
+          '--ignore-certificate-errors-spki-list',
+          '--disable-site-isolation-trials',
+          '--disable-features=VizDisplayCompositor'
+        ]
+      });
+      log("Successfully launched Chromium as fallback for Teams");
+    }
     
     // Create context with CSP bypass to allow script injection (like Google Meet)
     const context = await browserInstance.newContext({

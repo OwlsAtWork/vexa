@@ -722,4 +722,14 @@ class UserAnalyticsResponse(BaseModel):
     meeting_stats: UserMeetingStats
     usage_patterns: UserUsagePatterns
     api_tokens: Optional[List[TokenResponse]]  # Optional for security
-# --- END Analytics Schemas --- 
+# --- END Analytics Schemas ---
+
+# --- AWS Configuration Schemas ---
+class S3Configuration(BaseModel):
+    """Represents the AWS S3 Configuration"""
+    access_key: Optional[str] = None
+    bucket_name: str
+    region: Optional[str] = None
+    secret_key: Optional[str] = None
+    session_token: Optional[str] = None
+# --- END AWS Configuration Schemas --- 

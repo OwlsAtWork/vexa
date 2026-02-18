@@ -27,4 +27,6 @@ aiosqlite # If using sqlite async (often for testing)
 requests
 httpx
 psycopg2-binary
-aiodocker 
+aiodocker
+boto3>=1.34.0
+botocore>=1.34.0 

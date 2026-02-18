@@ -220,16 +220,40 @@ export const googleSpeakingIndicators: string[] = [
   '.OgVli'   // Additional speaking class
 ];
 
-// Google Meet removal/error state indicators
-export const googleRemovalIndicators: string[] = [
+// Google Meet meeting ended indicators (when host ends meeting for everyone)
+export const googleMeetingEndedIndicators: string[] = [
   // Meeting ended messages
   'text="Meeting ended"',
   'text*="Meeting ended"',
   'text="Call ended"',
   'text*="Call ended"',
+  'text="The meeting has ended"',
+  'text*="The meeting has ended"',
+  'text="This meeting has ended"',
+  'text*="This meeting has ended"',
+
+  // Return to home screen button (appears after meeting ends)
+  'button:has-text("Return to home screen")',
+  'button:has-text("Rejoin")',
+  'button:has-text("Return to home")',
+
+  // Meeting end dialog
+  '[role="dialog"]:has-text("Meeting ended")',
+  '[role="alertdialog"]:has-text("Meeting ended")',
+  '[role="dialog"]:has-text("Call ended")',
+  '[role="alertdialog"]:has-text("Call ended")'
+];
+
+// Google Meet removal/error state indicators (when bot is kicked/removed)
+export const googleRemovalIndicators: string[] = [
+  // Bot was removed/kicked
   'text="You left the meeting"',
   'text*="You left the meeting"',
-  
+  'text="You have been removed"',
+  'text*="You have been removed"',
+  'text="The host removed you"',
+  'text*="The host removed you"',
+
   // Connection issues
   'text="Connection lost"',
   'text*="Connection lost"',
@@ -237,10 +261,10 @@ export const googleRemovalIndicators: string[] = [
   'text*="Unable to connect"',
   'text="Reconnecting"',
   'text*="Reconnecting"',
-  
+
   // Generic error patterns
-  '[role="alert"]',
-  '[role="alertdialog"]',
+  '[role="alert"]:not(:has-text("Meeting ended"))',
+  '[role="alertdialog"]:not(:has-text("Meeting ended"))',
   '.error-message',
   '.connection-error',
   '.meeting-error'

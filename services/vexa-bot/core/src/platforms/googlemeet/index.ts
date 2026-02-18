@@ -8,6 +8,7 @@ import { waitForGoogleMeetingAdmission, checkForGoogleAdmissionSilent } from "./
 import { startGoogleRecording } from "./recording";
 import { prepareForRecording, leaveGoogleMeet } from "./leave";
 import { startGoogleRemovalMonitor } from "./removal";
+import { startGoogleMeetingEndMonitor } from "./meetingEnd";
 
 // --- Google Meet Main Handler ---
 
@@ -26,6 +27,7 @@ export async function handleGoogleMeet(
     prepare: prepareForRecording,
     startRecording: startGoogleRecording,
     startRemovalMonitor: startGoogleRemovalMonitor,
+    startMeetingEndMonitor: startGoogleMeetingEndMonitor,
     leave: leaveGoogleMeet
   };
 

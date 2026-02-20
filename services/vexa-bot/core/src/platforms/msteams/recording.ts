@@ -66,6 +66,30 @@ export async function startTeamsRecording(page: Page, botConfig: BotConfig): Pro
       log(`[Node.js] ERROR: Failed to connect Redis client: ${error.message}`);
     }
 
+    // Expose function for browser to send speaker events to Node.js transcriber
+    await page.exposeFunction('sendSpeakerEventToNodeTranscriber', async (
+      eventType: string,
+      participantName: string,
+      participantId: string,
+      relativeTimestampMs: number
+    ) => {
+      try {
+        // Send speaker event to transcriber service (AWS, Deepgram, etc.)
+        if (typeof transcriber.sendSpeakerEvent === 'function') {
+          transcriber.sendSpeakerEvent(
+            eventType,
+            participantName,
+            participantId,
+            relativeTimestampMs,
+            botConfig
+          );
+          log(`[Node.js] Speaker event forwarded: ${eventType} - ${participantName} at ${relativeTimestampMs}ms`);
+        }
+      } catch (error: any) {
+        log(`[Node.js] Error forwarding speaker event: ${error.message}`);
+      }
+    });
+
     // Expose function for browser to send audio chunks to Node.js
     let audioChunkCount = 0;
     await page.exposeFunction('sendAudioToNodeTranscriber', async (audioDataArray: number[]) => {
@@ -147,6 +171,7 @@ export async function startTeamsRecording(page: Page, botConfig: BotConfig): Pro
                       text: seg.text?.trim() || '',
                       start: seg.start || 0,
                       end: seg.end || 0,
+                      speaker: seg.speaker || null, // Include speaker name from AWS correlation
                       language: seg.language || null,
                       completed: true // AWS/Deepgram/ElevenLabs provide final transcriptions
                     })).filter((seg: any) => seg.text) // Only send non-empty segments
@@ -739,21 +764,32 @@ export async function startTeamsRecording(page: Page, botConfig: BotConfig): Pro
               function sendTeamsSpeakerEvent(eventType: string, identity: ParticipantIdentity) {
                 const eventAbsoluteTimeMs = Date.now();
                 const sessionStartTime = audioService.getSessionAudioStartTime();
-                
+
                 if (sessionStartTime === null) {
                   return;
                 }
-                
+
                 const relativeTimestampMs = eventAbsoluteTimeMs - sessionStartTime;
-                
+
                 try {
-                  whisperLiveService.sendSpeakerEvent(
-                    eventType,
-                    identity.name,
-                    identity.id,
-                    relativeTimestampMs,
-                    botConfigData
-                  );
+                  if (useNodeBridge) {
+                    // For AWS/Deepgram/ElevenLabs: send to Node.js transcriber
+                    (window as any).sendSpeakerEventToNodeTranscriber(
+                      eventType,
+                      identity.name,
+                      identity.id,
+                      relativeTimestampMs
+                    );
+                  } else {
+                    // For WhisperLive: send via WebSocket
+                    whisperLiveService.sendSpeakerEvent(
+                      eventType,
+                      identity.name,
+                      identity.id,
+                      relativeTimestampMs,
+                      botConfigData
+                    );
+                  }
                 } catch (error: any) {
                   // Handle errors silently
                 }

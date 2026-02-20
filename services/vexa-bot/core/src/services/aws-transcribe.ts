@@ -23,6 +23,15 @@ export class AWSTranscribeService implements TranscriberService {
   private isConnected: boolean = false;
   private config: any = {};
 
+  // Speaker event tracking for correlation with AWS labels
+  private speakerEvents: Array<{
+    timestamp: number;
+    eventType: string;
+    participantName: string;
+    participantId: string;
+  }> = [];
+  private sessionStartTime: number = 0;
+
   constructor() {
     log('[AWSTranscribe] Service created');
   }
@@ -141,6 +150,9 @@ export class AWSTranscribeService implements TranscriberService {
         MediaSampleRateHertz: this.config.sampleRate,
         MediaEncoding: 'pcm',
         AudioStream: audioStreamGenerator,
+
+        ShowSpeakerLabel: true,
+        MaxSpeakerLabels: 10
       };
 
       // Language configuration: IdentifyLanguage and LanguageCode are mutually exclusive
@@ -332,6 +344,40 @@ export class AWSTranscribeService implements TranscriberService {
               if (transcript && transcript.trim()) {
                 log(`[AWSTranscribe] Transcription: ${transcript}`);
 
+                // Extract AWS speaker label from Items (most common speaker in this segment)
+                let awsSpeakerLabel = null;
+                if (result.Alternatives[0].Items && result.Alternatives[0].Items.length > 0) {
+                  // Count speaker occurrences
+                  const speakerCounts: { [key: string]: number } = {};
+                  result.Alternatives[0].Items.forEach((item: any) => {
+                    if (item.Speaker) {
+                      speakerCounts[item.Speaker] = (speakerCounts[item.Speaker] || 0) + 1;
+                    }
+                  });
+
+                  // Get most common speaker (if any speakers found)
+                  const speakers = Object.keys(speakerCounts);
+                  if (speakers.length > 0) {
+                    awsSpeakerLabel = speakers.reduce((a, b) =>
+                      speakerCounts[a] > speakerCounts[b] ? a : b
+                    );
+                  }
+                }
+
+                // Correlate AWS speaker label with real participant names
+                // AWS returns timestamps in seconds, convert to milliseconds for correlation
+                const startMs = (result.StartTime || 0) * 1000;
+                const endMs = (result.EndTime || 0) * 1000;
+                const realSpeaker = this.findSpeakerAtTime(startMs, endMs);
+
+                // Use real name if available, otherwise fall back to AWS label
+                const speaker = realSpeaker || awsSpeakerLabel;
+
+                // Extract language from result or fall back to config
+                const language = result.LanguageCode || this.config.languageCode || 'en-US';
+
+                log(`[AWSTranscribe] Speaker: ${speaker || 'unknown'} (AWS: ${awsSpeakerLabel || 'none'}), Language: ${language}`);
+
                 // Format in WhisperLive-compatible format for unified callback
                 const formattedData = {
                   type: 'transcription',
@@ -341,6 +387,8 @@ export class AWSTranscribeService implements TranscriberService {
                       text: transcript,
                       start: result.StartTime || 0,
                       end: result.EndTime || 0,
+                      speaker: speaker,
+                      language: language,
                     },
                   ],
                 };
@@ -396,5 +444,80 @@ export class AWSTranscribeService implements TranscriberService {
    */
   getProvider(): string {
     return 'aws';
+  }
+
+  /**
+   * Send speaker event for correlation with AWS transcription
+   * This allows mapping AWS's generic speaker labels (spk_0, spk_1) to real participant names
+   */
+  sendSpeakerEvent(
+    eventType: string,
+    participantName: string,
+    participantId: string,
+    relativeTimestampMs: number,
+    botConfig: BotConfig
+  ): boolean {
+    // Store speaker event for later correlation
+    this.speakerEvents.push({
+      timestamp: relativeTimestampMs,
+      eventType,
+      participantName,
+      participantId,
+    });
+
+    log(`[AWSTranscribe] Speaker event: ${eventType} - ${participantName} at ${relativeTimestampMs}ms`);
+
+    // Keep only last 1000 events to prevent memory issues
+    if (this.speakerEvents.length > 1000) {
+      this.speakerEvents.shift();
+    }
+
+    return true;
+  }
+
+  /**
+   * Find the real speaker name for a given time range
+   * Correlates AWS speaker labels with actual participant names based on timing
+   */
+  private findSpeakerAtTime(startMs: number, endMs: number): string | null {
+    if (this.speakerEvents.length === 0) {
+      return null;
+    }
+
+    // Find the most recent SPEAKER_START event before or during this segment
+    let currentSpeaker: string | null = null;
+    let bestMatchTime = -1;
+
+    for (const event of this.speakerEvents) {
+      // Look for events that started before or during this transcription segment
+      // Allow a small window (±500ms) for timing discrepancies
+      const timeDiff = event.timestamp - startMs;
+
+      if (timeDiff <= 500 && timeDiff >= -500) {
+        if (event.eventType === 'SPEAKER_START') {
+          // Found a speaker who started around this time
+          if (event.timestamp > bestMatchTime) {
+            currentSpeaker = event.participantName;
+            bestMatchTime = event.timestamp;
+          }
+        }
+      } else if (event.timestamp < startMs - 500) {
+        // Process historical events to find who was speaking
+        if (event.eventType === 'SPEAKER_START') {
+          currentSpeaker = event.participantName;
+          bestMatchTime = event.timestamp;
+        } else if (event.eventType === 'SPEAKER_END' && event.participantName === currentSpeaker) {
+          // Speaker stopped before this segment
+          currentSpeaker = null;
+          bestMatchTime = -1;
+        }
+      }
+    }
+
+    if (currentSpeaker) {
+      log(`[AWSTranscribe] Correlation: Segment at ${startMs}-${endMs}ms matched to ${currentSpeaker}`);
+    }
+
+    return currentSpeaker;
   }
 }

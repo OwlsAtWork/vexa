@@ -362,9 +362,17 @@ class MeetingCreate(BaseModel):
     @field_validator('language')
     @classmethod
     def validate_language(cls, v):
-        """Validate that the language code is one of the accepted language codes."""
-        if v is not None and v != "" and v not in ACCEPTED_LANGUAGE_CODES:
-            raise ValueError(f"Invalid language code '{v}'. Must be one of: {sorted(ACCEPTED_LANGUAGE_CODES)}")
+        """Validate that the language code is one of the accepted language codes.
+
+        Accepts both base codes (e.g., 'en') and locale-specific codes (e.g., 'en-US').
+        Locale-specific codes are automatically converted to base codes.
+        """
+        if v is not None and v != "":
+            # Strip locale suffix if present (e.g., "en-US" -> "en")
+            base_lang = v.split('-')[0].lower()
+            if base_lang not in ACCEPTED_LANGUAGE_CODES:
+                raise ValueError(f"Invalid language code '{v}'. Base code '{base_lang}' must be one of: {sorted(ACCEPTED_LANGUAGE_CODES)}")
+            return base_lang
         return v
 
     @field_validator('task')
@@ -474,11 +482,20 @@ class MeetingDataUpdate(BaseModel):
     @field_validator('languages')
     @classmethod
     def validate_languages(cls, v):
-        """Validate that all language codes in the list are accepted faster-whisper codes."""
+        """Validate that all language codes in the list are accepted faster-whisper codes.
+
+        Accepts both base codes (e.g., 'en') and locale-specific codes (e.g., 'en-US').
+        Locale-specific codes are automatically converted to base codes.
+        """
         if v is not None:
-            invalid_languages = [lang for lang in v if lang not in ACCEPTED_LANGUAGE_CODES]
-            if invalid_languages:
-                raise ValueError(f"Invalid language codes: {invalid_languages}. Must be one of: {sorted(ACCEPTED_LANGUAGE_CODES)}")
+            # Convert all language codes to base codes
+            base_langs = []
+            for lang in v:
+                base_lang = lang.split('-')[0].lower()
+                if base_lang not in ACCEPTED_LANGUAGE_CODES:
+                    raise ValueError(f"Invalid language code '{lang}'. Base code '{base_lang}' must be one of: {sorted(ACCEPTED_LANGUAGE_CODES)}")
+                base_langs.append(base_lang)
+            return base_langs
         return v
 
 class MeetingUpdate(BaseModel):
@@ -494,9 +511,17 @@ class MeetingConfigUpdate(BaseModel):
     @field_validator('language')
     @classmethod
     def validate_language(cls, v):
-        """Validate that the language code is one of the accepted faster-whisper codes."""
-        if v is not None and v != "" and v not in ACCEPTED_LANGUAGE_CODES:
-            raise ValueError(f"Invalid language code '{v}'. Must be one of: {sorted(ACCEPTED_LANGUAGE_CODES)}")
+        """Validate that the language code is one of the accepted faster-whisper codes.
+
+        Accepts both base codes (e.g., 'en') and locale-specific codes (e.g., 'en-US').
+        Locale-specific codes are automatically converted to base codes.
+        """
+        if v is not None and v != "":
+            # Strip locale suffix if present (e.g., "en-US" -> "en")
+            base_lang = v.split('-')[0].lower()
+            if base_lang not in ACCEPTED_LANGUAGE_CODES:
+                raise ValueError(f"Invalid language code '{v}'. Base code '{base_lang}' must be one of: {sorted(ACCEPTED_LANGUAGE_CODES)}")
+            return base_lang
         return v
 
     @field_validator('task')
@@ -526,9 +551,17 @@ class TranscriptionSegment(BaseModel):
     @field_validator('language')
     @classmethod
     def validate_language(cls, v):
-        """Validate that the language code is one of the accepted faster-whisper codes."""
-        if v is not None and v != "" and v not in ACCEPTED_LANGUAGE_CODES:
-            raise ValueError(f"Invalid language code '{v}'. Must be one of: {sorted(ACCEPTED_LANGUAGE_CODES)}")
+        """Validate that the language code is one of the accepted faster-whisper codes.
+
+        Accepts both base codes (e.g., 'en') and locale-specific codes (e.g., 'en-US').
+        Locale-specific codes are automatically converted to base codes.
+        """
+        if v is not None and v != "":
+            # Strip locale suffix if present (e.g., "en-US" -> "en")
+            base_lang = v.split('-')[0].lower()
+            if base_lang not in ACCEPTED_LANGUAGE_CODES:
+                raise ValueError(f"Invalid language code '{v}'. Base code '{base_lang}' must be one of: {sorted(ACCEPTED_LANGUAGE_CODES)}")
+            return base_lang
         return v
 
     class Config:

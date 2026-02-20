@@ -45,6 +45,18 @@ export interface TranscriberService {
    * Get transcriber provider name
    */
   getProvider(): string;
+
+  /**
+   * Send speaker event for correlation with transcription (optional)
+   * Used to map generic speaker labels to real participant names
+   */
+  sendSpeakerEvent?(
+    eventType: string,
+    participantName: string,
+    participantId: string,
+    relativeTimestampMs: number,
+    botConfig: BotConfig
+  ): boolean;
 }
 
 /**

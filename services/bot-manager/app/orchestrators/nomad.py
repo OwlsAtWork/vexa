@@ -55,16 +55,33 @@ async def start_bot_container(
     user_token: str,
     native_meeting_id: str,
     language: Optional[str],
-    task: Optional[str]
+    task: Optional[str],
+    transcriber_env: Optional[Dict[str, str]] = None
 ) -> Optional[Tuple[str, str]]:
     """Dispatch a parameterised *vexa-bot* Nomad job.
 
-    Returns (dispatched_job_id, connection_id) on success.
+    Args:
+        user_id: ID of the user requesting the bot
+        meeting_id: Internal database meeting ID
+        meeting_url: URL of the meeting to join
+        platform: Meeting platform (google_meet, teams, zoom)
+        bot_name: Display name for the bot in the meeting
+        user_token: API token of the requesting user
+        native_meeting_id: Platform-specific meeting identifier
+        language: Language code for transcription
+        task: Transcription task (transcribe or translate)
+        transcriber_env: Optional dictionary of transcriber-specific environment variables
+                        (e.g., TRANSCRIBER_PROVIDER, TRANSCRIBER_CONFIG, S3_*, API keys)
+                        Note: These are passed as Nomad job metadata; the job template
+                        must be configured to read from metadata and set as environment variables
+
+    Returns:
+        Tuple of (dispatched_job_id, connection_id) on success, (None, None) on failure
     """
     # Concurrency limit is now checked in request_bot (fast-fail). Keep minimal here.
 
     connection_id = str(uuid.uuid4())
-    
+
     # Mint MeetingToken (HS256)
     from app.main import mint_meeting_token
     try:
@@ -91,6 +108,23 @@ async def start_bot_container(
         "language": language or "",
         "task": task or "",
     }
+
+    # Add transcriber environment variables to metadata if provided
+    # The Nomad job template should be configured to read these from NOMAD_META_*
+    # and set them as environment variables in the task
+    if transcriber_env:
+        logger.info(f"Adding {len(transcriber_env)} transcriber environment variables to Nomad job metadata")
+        for key, value in transcriber_env.items():
+            if value:  # Only add non-empty values
+                # Nomad converts metadata keys to NOMAD_META_<key> environment variables
+                meta[key] = value
+                # Log keys (but not full values for security)
+                if 'KEY' in key.upper() or 'SECRET' in key.upper():
+                    logger.debug(f"  Added meta: {key}=***")
+                else:
+                    logger.debug(f"  Added meta: {key}={value}")
+    else:
+        logger.info("No transcriber environment variables provided, using WhisperLive default")
 
     # Nomad job dispatch endpoint
     url = f"{NOMAD_ADDR}/v1/job/{BOT_JOB_NAME}/dispatch"

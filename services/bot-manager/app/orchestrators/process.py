@@ -166,7 +166,8 @@ async def start_bot_container(
     user_token: str,
     native_meeting_id: str,
     language: Optional[str],
-    task: Optional[str]
+    task: Optional[str],
+    transcriber_env: Optional[Dict[str, str]] = None
 ) -> Optional[Tuple[str, str]]:
     """Start a bot as a Node.js child process.
 
@@ -183,6 +184,8 @@ async def start_bot_container(
         native_meeting_id: Platform-specific meeting identifier
         language: Language code for transcription
         task: Transcription task (transcribe or translate)
+        transcriber_env: Optional dictionary of transcriber-specific environment variables
+                        (e.g., TRANSCRIBER_PROVIDER, TRANSCRIBER_CONFIG, S3_*, API keys)
 
     Returns:
         Tuple of (process_id, connection_id) on success, (None, None) on failure
@@ -244,6 +247,20 @@ async def start_bot_container(
     env["LOG_LEVEL"] = os.getenv("LOG_LEVEL", "INFO")
     # Ensure Node.js can find modules
     env["NODE_PATH"] = os.path.join(BOT_WORKING_DIR, "node_modules")
+
+    # Add transcriber environment variables if provided
+    if transcriber_env:
+        logger.info(f"Adding {len(transcriber_env)} transcriber environment variables to process")
+        for key, value in transcriber_env.items():
+            if value:  # Only add non-empty values
+                env[key] = value
+                # Log keys (but not full values for security)
+                if 'KEY' in key.upper() or 'SECRET' in key.upper():
+                    logger.debug(f"  Added env var: {key}=***")
+                else:
+                    logger.debug(f"  Added env var: {key}={value}")
+    else:
+        logger.info("No transcriber environment variables provided, using WhisperLive default")
 
     # Ensure logs directory exists
     logs_path = Path(PROCESS_LOGS_DIR)

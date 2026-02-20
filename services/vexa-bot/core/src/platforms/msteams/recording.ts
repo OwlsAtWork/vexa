@@ -2,7 +2,9 @@ import { Page } from "playwright";
 import { log } from "../../utils";
 import { BotConfig } from "../../types";
 import { WhisperLiveService } from "../../services/whisperlive";
+import { TranscriberFactory, TranscriberService } from "../../services/transcriber-factory";
 import { ensureBrowserUtils } from "../../utils/injection";
+import { createClient, RedisClientType } from 'redis';
 import {
   teamsParticipantSelectors,
   teamsSpeakingClassNames,
@@ -20,24 +22,213 @@ import {
 
 // Modified to use new services - Teams recording functionality
 export async function startTeamsRecording(page: Page, botConfig: BotConfig): Promise<void> {
-  // Initialize WhisperLive service on Node.js side
-  const whisperLiveService = new WhisperLiveService({
-    whisperLiveUrl: process.env.WHISPER_LIVE_URL
-  });
+  // Create transcriber using factory (respects TRANSCRIBER_PROVIDER env var)
+  const transcriber: TranscriberService = TranscriberFactory.create();
+  const provider = transcriber.getProvider();
 
-  // Initialize WhisperLive connection with STUBBORN reconnection - NEVER GIVES UP!
-  const whisperLiveUrl = await whisperLiveService.initializeWithStubbornReconnection("Teams");
+  log(`[Node.js] Using transcriber: ${provider}`);
 
-  log(`[Node.js] Using WhisperLive URL for Teams: ${whisperLiveUrl}`);
-  log("Starting Teams recording with WebSocket connection");
+  // Initialize transcriber
+  const initialized = await transcriber.initialize(botConfig);
+  if (!initialized) {
+    throw new Error(`Failed to initialize ${provider} transcriber`);
+  }
+
+  log(`[Node.js] ${provider} transcriber initialized successfully`);
+
+  // For WhisperLive, we need the URL for browser-side WebSocket
+  let whisperLiveUrl: string | null = null;
+  if (provider === 'whisper_live') {
+    const whisperService = transcriber as WhisperLiveService;
+    whisperLiveUrl = await whisperService.initializeWithStubbornReconnection("Teams");
+    log(`[Node.js] Using WhisperLive URL for Teams: ${whisperLiveUrl}`);
+  }
+
+  log(`Starting Teams recording with ${provider} transcription`);
 
   await ensureBrowserUtils(page, require('path').join(__dirname, '../../browser-utils.global.js'));
+
+  // For non-WhisperLive transcribers, set up Node.js-side connection and audio bridge
+  let nodeTranscriberSocket: any = null;
+  let isAwsConnected = false;
+  const audioBufferQueue: Buffer[] = [];
+  let redisClient: RedisClientType | null = null;
+
+  if (provider !== 'whisper_live') {
+    log(`[Node.js] Setting up ${provider} delayed connection (will connect on first non-silent audio)...`);
+
+    // Initialize Redis client for sending transcriptions to transcription-collector
+    try {
+      redisClient = createClient({ url: botConfig.redisUrl });
+      await redisClient.connect();
+      log(`[Node.js] Redis client connected for ${provider} transcriptions`);
+    } catch (error: any) {
+      log(`[Node.js] ERROR: Failed to connect Redis client: ${error.message}`);
+    }
+
+    // Expose function for browser to send audio chunks to Node.js
+    let audioChunkCount = 0;
+    await page.exposeFunction('sendAudioToNodeTranscriber', async (audioDataArray: number[]) => {
+      audioChunkCount++;
+      if (audioChunkCount === 1 || audioChunkCount % 100 === 0) {
+        log(`[Node.js] Received audio chunk ${audioChunkCount} from browser (${audioDataArray.length} samples)`);
+      }
+
+      // Check if this chunk contains actual audio (not just silence)
+      // AWS Transcribe requires real speech, not just background noise
+      const nonZeroCount = audioDataArray.filter(s => Math.abs(s) > 0.0001).length;
+      const maxAmplitude = Math.max(...audioDataArray.map(Math.abs));
+      // Stricter threshold: require max amplitude > 0.05 (about 5% of full scale) for "real" audio
+      // This filters out background noise and very quiet audio that AWS would reject anyway
+      const isSilent = maxAmplitude < 0.05;
+
+      if (audioChunkCount === 1 || audioChunkCount % 100 === 0) {
+        const avgAmplitude = audioDataArray.reduce((sum, s) => sum + Math.abs(s), 0) / audioDataArray.length;
+        log(`[Node.js] Audio stats - NonZero: ${nonZeroCount}/${audioDataArray.length} (${(nonZeroCount/audioDataArray.length*100).toFixed(1)}%), Max: ${maxAmplitude.toFixed(6)}, Avg: ${avgAmplitude.toFixed(6)}, Silent: ${isSilent}`);
+      }
+
+      // Convert Float32 audio data (from Web Audio API) to PCM16 format
+      const pcm16Buffer = Buffer.alloc(audioDataArray.length * 2); // 2 bytes per sample
+      for (let i = 0; i < audioDataArray.length; i++) {
+        const sample = Math.max(-1, Math.min(1, audioDataArray[i]));
+        const pcmSample = sample < 0 ? sample * 32768 : sample * 32767;
+        pcm16Buffer.writeInt16LE(Math.round(pcmSample), i * 2);
+      }
+
+      // Validate buffer before sending
+      if (pcm16Buffer.length === 0) {
+        log(`[Node.js] ERROR: Empty PCM buffer generated, skipping`);
+        return;
+      }
+
+      // Verify PCM16 buffer actually contains audio (not just zeros)
+      // This is CRITICAL because Float32 silence detection can be wrong
+      let pcm16HasAudio = false;
+      for (let i = 0; i < pcm16Buffer.length; i += 2) {
+        const sample = Math.abs(pcm16Buffer.readInt16LE(i));
+        if (sample > 1000) { // Threshold ~0.03 amplitude in PCM16 format
+          pcm16HasAudio = true;
+          break;
+        }
+      }
+
+      // Log first chunk for debugging
+      if (audioChunkCount === 1) {
+        const preview = pcm16Buffer.slice(0, 32).toString('hex');
+        log(`[Node.js] First PCM16 chunk (hex preview): ${preview}`);
+        log(`[Node.js] PCM16 buffer size: ${pcm16Buffer.length} bytes (${audioDataArray.length} samples)`);
+        log(`[Node.js] PCM16 hasAudio check: ${pcm16HasAudio}`);
+      }
+
+      try {
+        // If AWS not connected yet and we have actual audio in PCM16 format, connect now
+        // Use PCM16 check instead of Float32 isSilent to avoid false positives
+        if (!isAwsConnected && pcm16HasAudio) {
+          isAwsConnected = true; // Set flag immediately to prevent race condition
+          log(`[Node.js] First non-silent audio detected! Connecting to ${provider}...`);
+
+          // Start AWS connection asynchronously (don't await - prevents deadlock)
+          transcriber.connect(
+            botConfig,
+            async (data: any) => {
+              log(`[${provider}] Transcription received: ${JSON.stringify(data).substring(0, 200)}`);
+
+              // Send transcription to transcription-collector via Redis Stream
+              if (redisClient && data.segments && data.segments.length > 0) {
+                try {
+                  // Wrap in WhisperLive-compatible format with MeetingToken for authentication
+                  const payloadObject = {
+                    type: 'transcription',
+                    token: botConfig.token, // MeetingToken (HS256 JWT) for authentication
+                    platform: botConfig.platform,
+                    meeting_id: botConfig.meeting_id,
+                    uid: botConfig.connectionId,
+                    segments: data.segments.map((seg: any) => ({
+                      text: seg.text?.trim() || '',
+                      start: seg.start || 0,
+                      end: seg.end || 0,
+                      language: seg.language || null,
+                      completed: true // AWS/Deepgram/ElevenLabs provide final transcriptions
+                    })).filter((seg: any) => seg.text) // Only send non-empty segments
+                  };
+
+                  // Serialize payload to JSON string (WhisperLive format)
+                  const payloadJson = JSON.stringify(payloadObject);
+
+                  // Send to Redis Stream with 'payload' field
+                  await redisClient.xAdd('transcription_segments', '*', {
+                    payload: payloadJson
+                  });
+
+                  log(`[${provider}] Sent ${data.segments.length} transcription segment(s) to Redis Stream (meeting ${botConfig.meeting_id})`);
+                } catch (redisError: any) {
+                  log(`[${provider}] ERROR: Failed to send transcription to Redis: ${redisError.message}`);
+                }
+              }
+            },
+            (error: any) => {
+              log(`[${provider}] Error: ${error.message || error}`);
+            },
+            (event?: any) => {
+              log(`[${provider}] Connection closed`);
+            }
+          ).then((socket) => {
+            nodeTranscriberSocket = socket;
+            log(`[Node.js] ${provider} connection established, sending ${audioBufferQueue.length} buffered chunks...`);
+
+            // Filter out silent chunks from buffer before sending to AWS
+            // AWS Transcribe will timeout if it only receives silence for 15 seconds
+            const nonSilentChunks = audioBufferQueue.filter((bufferedChunk) => {
+              // Check if chunk contains actual audio (not just silence)
+              let hasAudio = false;
+              for (let i = 0; i < bufferedChunk.length; i += 2) {
+                const sample = bufferedChunk.readInt16LE(i);
+                if (Math.abs(sample) > 100) { // Threshold for silence (100 is ~0.003 amplitude)
+                  hasAudio = true;
+                  break;
+                }
+              }
+              return hasAudio;
+            });
+
+            log(`[Node.js] Filtered buffered chunks: ${audioBufferQueue.length} total, ${nonSilentChunks.length} non-silent`);
+
+            // Send only non-silent buffered chunks
+            nonSilentChunks.forEach(async (bufferedChunk) => {
+              await transcriber.sendAudio(nodeTranscriberSocket, bufferedChunk);
+            });
+            audioBufferQueue.length = 0; // Clear buffer
+          }).catch((err) => {
+            log(`[Node.js] Failed to connect to ${provider}: ${err.message}`);
+          });
+        }
+
+        // Send current chunk (only if not silent to avoid AWS timeout)
+        if (isAwsConnected && nodeTranscriberSocket) {
+          // Only send non-silent chunks to AWS Transcribe to avoid 15-second silence timeout
+          if (!isSilent) {
+            await transcriber.sendAudio(nodeTranscriberSocket, pcm16Buffer);
+          }
+        } else {
+          // Buffer chunks while waiting for connection (up to 50 chunks = ~3 seconds)
+          if (audioBufferQueue.length < 50) {
+            audioBufferQueue.push(pcm16Buffer);
+          }
+        }
+      } catch (error: any) {
+        log(`[Node.js] Error processing audio for ${provider}: ${error.message}`);
+      }
+    });
+
+    log(`[Node.js] Audio bridge exposed to browser`);
+  }
 
   // Pass the necessary config fields and the resolved URL into the page context
   await page.evaluate(
     async (pageArgs: {
       botConfigData: BotConfig;
-      whisperUrlForBrowser: string;
+      whisperUrlForBrowser: string | null;
+      transcriberProvider: string;
       selectors: {
         participantSelectors: string[];
         speakingClasses: string[];
@@ -53,8 +244,9 @@ export async function startTeamsRecording(page: Page, botConfig: BotConfig): Pro
         meetingContainerSelectors: string[];
       };
     }) => {
-      const { botConfigData, whisperUrlForBrowser, selectors } = pageArgs;
+      const { botConfigData, whisperUrlForBrowser, transcriberProvider, selectors } = pageArgs;
       const selectorsTyped = selectors as any;
+      const useNodeBridge = transcriberProvider !== 'whisper_live';
 
       // Use browser utility classes from the global bundle
       const { BrowserAudioService, BrowserWhisperLiveService } = (window as any).VexaBrowserUtils;
@@ -173,63 +365,84 @@ export async function startTeamsRecording(page: Page, botConfig: BotConfig): Pro
           }).then(async (processor: any) => {
             // Setup audio data processing
             audioService.setupAudioDataProcessor(async (audioData: Float32Array, sessionStartTime: number | null) => {
-              // Only send after server ready
-              if (!whisperLiveService.isReady()) {
-                return;
-              }
-              // Compute simple RMS and peak for diagnostics
-              let sumSquares = 0;
-              let peak = 0;
-              for (let i = 0; i < audioData.length; i++) {
-                const v = audioData[i];
-                sumSquares += v * v;
-                const a = Math.abs(v);
-                if (a > peak) peak = a;
-              }
-              const rms = Math.sqrt(sumSquares / Math.max(1, audioData.length));
-              // Diagnostic: send metadata first
-              whisperLiveService.sendAudioChunkMetadata(audioData.length, 16000);
-              // Send audio data to WhisperLive
-              const success = whisperLiveService.sendAudioData(audioData);
-              if (!success) {
-                (window as any).logBot("Failed to send Teams audio data to WhisperLive");
+              if (useNodeBridge) {
+                // Use Node.js bridge for AWS/Deepgram/ElevenLabs
+                try {
+                  // Convert Float32Array to regular array for JSON serialization
+                  const audioArray = Array.from(audioData);
+                  // Send audio to Node.js transcriber
+                  await (window as any).sendAudioToNodeTranscriber(audioArray);
+                } catch (error: any) {
+                  (window as any).logBot(`Failed to send audio to Node transcriber: ${error.message}`);
+                }
+              } else {
+                // Use browser-side WhisperLive WebSocket
+                // Only send after server ready
+                if (!whisperLiveService.isReady()) {
+                  return;
+                }
+                // Compute simple RMS and peak for diagnostics
+                let sumSquares = 0;
+                let peak = 0;
+                for (let i = 0; i < audioData.length; i++) {
+                  const v = audioData[i];
+                  sumSquares += v * v;
+                  const a = Math.abs(v);
+                  if (a > peak) peak = a;
+                }
+                const rms = Math.sqrt(sumSquares / Math.max(1, audioData.length));
+                // Diagnostic: send metadata first
+                whisperLiveService.sendAudioChunkMetadata(audioData.length, 16000);
+                // Send audio data to WhisperLive
+                const success = whisperLiveService.sendAudioData(audioData);
+                if (!success) {
+                  (window as any).logBot("Failed to send Teams audio data to WhisperLive");
+                }
               }
             });
 
-            // Initialize WhisperLive WebSocket connection with reusable callbacks
-            const onMessage = (data: any) => {
-              if (data["status"] === "ERROR") {
-                (window as any).logBot(`Teams WebSocket Server Error: ${data["message"]}`);
-              } else if (data["status"] === "WAIT") {
-                (window as any).logBot(`Teams Server busy: ${data["message"]}`);
-              } else if (!whisperLiveService.isReady() && data["status"] === "SERVER_READY") {
-                whisperLiveService.setServerReady(true);
-                (window as any).logBot("Teams Server is ready.");
-              } else if (data["language"]) {
-                (window as any).logBot(`Teams Language detected: ${data["language"]}`);
-              } else if (data["message"] === "DISCONNECT") {
-                (window as any).logBot("Teams Server requested disconnect.");
-                whisperLiveService.close();
-              }
-            };
-            const onError = (event: Event) => {
-              (window as any).logBot(`[Teams Failover] WebSocket error. This will trigger retry logic.`);
-            };
-            const onClose = async (event: CloseEvent) => {
-              (window as any).logBot(`[Teams Failover] WebSocket connection closed. Code: ${event.code}, Reason: ${event.reason}.`);
-            };
+            // Initialize transcription connection based on provider
+            if (useNodeBridge) {
+              // For AWS/Deepgram/ElevenLabs: Node.js bridge is already set up
+              (window as any).logBot(`Teams using Node.js bridge for ${transcriberProvider} transcription`);
+              // No WebSocket connection needed - audio goes through sendAudioToNodeTranscriber
+              return Promise.resolve();
+            } else {
+              // Initialize WhisperLive WebSocket connection with reusable callbacks
+              const onMessage = (data: any) => {
+                if (data["status"] === "ERROR") {
+                  (window as any).logBot(`Teams WebSocket Server Error: ${data["message"]}`);
+                } else if (data["status"] === "WAIT") {
+                  (window as any).logBot(`Teams Server busy: ${data["message"]}`);
+                } else if (!whisperLiveService.isReady() && data["status"] === "SERVER_READY") {
+                  whisperLiveService.setServerReady(true);
+                  (window as any).logBot("Teams Server is ready.");
+                } else if (data["language"]) {
+                  (window as any).logBot(`Teams Language detected: ${data["language"]}`);
+                } else if (data["message"] === "DISCONNECT") {
+                  (window as any).logBot("Teams Server requested disconnect.");
+                  whisperLiveService.close();
+                }
+              };
+              const onError = (event: Event) => {
+                (window as any).logBot(`[Teams Failover] WebSocket error. This will trigger retry logic.`);
+              };
+              const onClose = async (event: CloseEvent) => {
+                (window as any).logBot(`[Teams Failover] WebSocket connection closed. Code: ${event.code}, Reason: ${event.reason}.`);
+              };
 
-            // Save callbacks globally for reuse
-            (window as any).__vexaOnMessage = onMessage;
-            (window as any).__vexaOnError = onError;
-            (window as any).__vexaOnClose = onClose;
+              // Save callbacks globally for reuse
+              (window as any).__vexaOnMessage = onMessage;
+              (window as any).__vexaOnError = onError;
+              (window as any).__vexaOnClose = onClose;
 
-            return await whisperLiveService.connectToWhisperLive(
-              (window as any).__vexaBotConfig,
-              onMessage,
-              onError,
-              onClose
-            );
+              return await whisperLiveService.connectToWhisperLive(
+                (window as any).__vexaBotConfig,
+                onMessage,
+                onError,
+                onClose
+              );
+            }
           }).then(() => {
             // Initialize Teams-specific speaker detection (browser context)
             (window as any).logBot("Initializing Teams speaker detection...");
@@ -987,9 +1200,10 @@ export async function startTeamsRecording(page: Page, botConfig: BotConfig): Pro
         }
       } catch {}
     },
-    { 
-      botConfigData: botConfig, 
+    {
+      botConfigData: botConfig,
       whisperUrlForBrowser: whisperLiveUrl,
+      transcriberProvider: provider,
       selectors: {
         participantSelectors: teamsParticipantSelectors,
         speakingClasses: teamsSpeakingClassNames,
@@ -1006,7 +1220,21 @@ export async function startTeamsRecording(page: Page, botConfig: BotConfig): Pro
       } as any
     }
   );
-  
-  // After page.evaluate finishes, cleanup services
-  await whisperLiveService.cleanup();
+
+  // After page.evaluate finishes, cleanup services based on provider
+  if (provider === 'whisper_live' && transcriber instanceof WhisperLiveService) {
+    await transcriber.cleanup();
+  } else if (nodeTranscriberSocket) {
+    await transcriber.close(nodeTranscriberSocket);
+
+    // Close Redis client if it was created
+    if (redisClient) {
+      try {
+        await redisClient.quit();
+        log(`[Node.js] Redis client closed for ${provider}`);
+      } catch (error: any) {
+        log(`[Node.js] ERROR: Failed to close Redis client: ${error.message}`);
+      }
+    }
+  }
 }

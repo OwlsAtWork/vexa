@@ -1,8 +1,10 @@
 import { log } from '../utils';
 import { BotConfig } from '../types';
+import { TranscriberService } from './transcriber-factory';
 
 export interface WhisperLiveConfig {
   whisperLiveUrl?: string;
+  transcriptionServiceUrl?: string; // ADDED: Optional transcription service URL for dynamic transcriber selection
 }
 
 export interface WhisperLiveConnection {
@@ -12,7 +14,7 @@ export interface WhisperLiveConnection {
   allocatedServerUrl: string | null;
 }
 
-export class WhisperLiveService {
+export class WhisperLiveService implements TranscriberService {
   private config: WhisperLiveConfig;
   private connection: WhisperLiveConnection | null = null;
 
@@ -21,12 +23,42 @@ export class WhisperLiveService {
   }
 
   /**
-   * Initialize WhisperLive URL via LB (Traefik/Consul)
+   * Get provider name
    */
-  async initialize(): Promise<string | null> {
+  getProvider(): string {
+    return 'whisper_live';
+  }
+
+  /**
+   * Initialize transcriber (implements TranscriberService interface)
+   */
+  async initialize(config?: BotConfig): Promise<boolean> {
+    const url = await this.initializeInternal();
+    return url !== null;
+  }
+
+  /**
+   * Initialize transcription service URL with priority:
+   * 1. transcriptionServiceUrl (from botConfig - passed by bot-manager for dynamic transcriber selection)
+   * 2. TRANSCRIPTION_SERVICE_URL (environment variable)
+   * 3. whisperLiveUrl (config parameter)
+   * 4. WHISPER_LIVE_URL (environment variable - backward compatibility)
+   */
+  async initializeInternal(): Promise<string | null> {
     try {
-      const allocatedUrl = this.config.whisperLiveUrl || (process.env.WHISPER_LIVE_URL as string) || null;
-      if (!allocatedUrl) return null;
+      const allocatedUrl =
+        this.config.transcriptionServiceUrl ||
+        (process.env.TRANSCRIPTION_SERVICE_URL as string) ||
+        this.config.whisperLiveUrl ||
+        (process.env.WHISPER_LIVE_URL as string) ||
+        null;
+
+      if (!allocatedUrl) {
+        log('[Transcription] No transcription service URL configured');
+        return null;
+      }
+
+      log(`[Transcription] Using transcription service: ${allocatedUrl}`);
 
       // Store connection info
       this.connection = {
@@ -38,9 +70,37 @@ export class WhisperLiveService {
 
       return allocatedUrl;
     } catch (error: any) {
-      log(`[WhisperLive] Initialization error: ${error.message}`);
+      log(`[Transcription] Initialization error: ${error.message}`);
       return null;
     }
+  }
+
+  /**
+   * Connect to transcriber (implements TranscriberService interface)
+   */
+  async connect(
+    config: BotConfig,
+    onTranscription: (data: any) => void,
+    onError: (error: any) => void,
+    onClose: (event?: any) => void
+  ): Promise<WebSocket | null> {
+    return this.connectToWhisperLive(config, onTranscription, onError, onClose);
+  }
+
+  /**
+   * Send audio to transcriber (implements TranscriberService interface)
+   */
+  async sendAudio(socket: any, audioData: Buffer): Promise<void> {
+    // Convert Buffer to Float32Array if needed
+    const float32Data = audioData as any as Float32Array;
+    this.sendAudioData(float32Data);
+  }
+
+  /**
+   * Close transcriber connection (implements TranscriberService interface)
+   */
+  async close(socket: any): Promise<void> {
+    await this.cleanup();
   }
 
   /**
@@ -266,27 +326,27 @@ export class WhisperLiveService {
    * This method will keep retrying until a connection is established
    */
   async initializeWithStubbornReconnection(platform: string): Promise<string> {
-    let whisperLiveUrl = await this.initialize();
-    
+    let whisperLiveUrl = await this.initializeInternal();
+
     // STUBBORN MODE: NEVER GIVE UP! Keep trying until we get a WhisperLive connection
     let retryCount = 0;
     while (!whisperLiveUrl) {
       retryCount++;
       const delay = Math.min(2000 * Math.pow(1.5, Math.min(retryCount, 10)), 10000); // Exponential backoff, max 10s
       log(`[STUBBORN] ❌ Could not initialize WhisperLive service for ${platform} (attempt ${retryCount}). NEVER GIVING UP! Retrying in ${delay}ms...`);
-      
+
       // Wait before retrying
       await new Promise(resolve => setTimeout(resolve, delay));
-      
+
       // Try again with the current service instance
-      whisperLiveUrl = await this.initialize();
-      
+      whisperLiveUrl = await this.initializeInternal();
+
       if (whisperLiveUrl) {
         log(`[STUBBORN] ✅ WhisperLive service initialized successfully for ${platform} after ${retryCount} attempts!`);
         break;
       }
     }
-    
+
     return whisperLiveUrl;
   }
 

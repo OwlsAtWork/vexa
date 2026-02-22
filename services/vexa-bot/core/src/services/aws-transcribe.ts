@@ -1,21 +1,13 @@
-/**
- * AWS Transcribe Service
- *
- * Implements real-time transcription using AWS Transcribe Streaming API
- */
+/* AWS Transcribe Service - Implements real-time transcription using AWS Transcribe Streaming API */
 
 import { log } from '../utils';
 import { BotConfig } from '../types';
 import { TranscriberService } from './transcriber-factory';
 
-// AWS SDK imports (will be installed via npm)
-// We'll use dynamic imports to avoid breaking if SDK isn't installed yet
 let TranscribeStreamingClient: any;
 let StartStreamTranscriptionCommand: any;
 
-/**
- * AWS Transcribe Service Implementation
- */
+/* AWS Transcribe Service Implementation */
 export class AWSTranscribeService implements TranscriberService {
   private client: any = null;
   private audioStream: any = null;
@@ -36,41 +28,16 @@ export class AWSTranscribeService implements TranscriberService {
     log('[AWSTranscribe] Service created');
   }
 
-  /**
-   * Initialize AWS Transcribe client
-   */
   async initialize(config: BotConfig): Promise<boolean> {
     try {
-      // Parse transcriber configuration
       const transcriberConfig = this.parseConfig();
       this.config = transcriberConfig;
-
-      // Log environment variable status
-      log(`[AWSTranscribe] Environment check:`);
-      log(`  AWS_ACCESS_KEY_ID: ${process.env.AWS_ACCESS_KEY_ID ? '✓ set' : '✗ MISSING'}`);
-      log(`  AWS_SECRET_ACCESS_KEY: ${process.env.AWS_SECRET_ACCESS_KEY ? '✓ set' : '✗ MISSING'}`);
-      log(`  AWS_SESSION_TOKEN: ${process.env.AWS_SESSION_TOKEN ? '✓ set' : '(not set - optional)'}`);
-      log(`  AWS_REGION: ${process.env.AWS_REGION || '(not set, will default to us-east-1)'}`);
-      log(`  TRANSCRIBER_CONFIG: ${process.env.TRANSCRIBER_CONFIG || '(not set, using defaults)'}`);
-
-      log(`[AWSTranscribe] Parsed configuration: ${JSON.stringify({
-        region: process.env.AWS_REGION || 'us-east-1',
-        languageCode: transcriberConfig.languageCode,
-        sampleRate: transcriberConfig.sampleRate,
-        identifyLanguage: transcriberConfig.identifyLanguage,
-        candidateLanguages: transcriberConfig.candidateLanguages,
-        denoiserEnabled: transcriberConfig.denoiserEnabled,
-        denoiserType: transcriberConfig.denoiserType
-      }, null, 2)}`);
-
-      // Validate AWS credentials
       if (!process.env.AWS_ACCESS_KEY_ID || !process.env.AWS_SECRET_ACCESS_KEY) {
-        log('[AWSTranscribe] ❌ ERROR: AWS credentials not found in environment');
+        log('[AWSTranscribe] ERROR: AWS credentials not found in environment');
         log('[AWSTranscribe] Required: AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY');
         return false;
       }
 
-      // Dynamic import of AWS SDK
       try {
         const awsSDK = await import('@aws-sdk/client-transcribe-streaming');
         TranscribeStreamingClient = awsSDK.TranscribeStreamingClient;
@@ -80,7 +47,6 @@ export class AWSTranscribeService implements TranscriberService {
         return false;
       }
 
-      // Create AWS Transcribe client
       this.client = new TranscribeStreamingClient({
         region: process.env.AWS_REGION || 'us-east-1',
         credentials: {
@@ -98,9 +64,7 @@ export class AWSTranscribeService implements TranscriberService {
     }
   }
 
-  /**
-   * Parse transcriber configuration from environment
-   */
+  /* Parse transcriber configuration from environment */
   private parseConfig() {
     const configStr = process.env.TRANSCRIBER_CONFIG || '{}';
     let config: any = {};
@@ -121,28 +85,21 @@ export class AWSTranscribeService implements TranscriberService {
     };
   }
 
-  /**
-   * Connect to AWS Transcribe and start streaming transcription
-   */
+  /* Connect to AWS Transcribe and start streaming transcription */
   async connect(
     config: BotConfig,
     onTranscription: (data: any) => void,
     onError: (error: any) => void,
     onClose: (event?: any) => void
   ): Promise<any> {
-    // Define params outside try block so it's accessible in catch for error logging
     let params: any = {};
-
     try {
       if (!this.client) {
         throw new Error('AWS Transcribe client not initialized');
       }
 
       log('[AWSTranscribe] Starting stream transcription...');
-
-      // Create async generator for audio stream
       const audioStreamGenerator = this.createAudioStreamGenerator();
-
       log('[AWSTranscribe] Audio stream generator created, preparing connection to AWS...');
 
       // Build transcription request parameters
@@ -150,34 +107,26 @@ export class AWSTranscribeService implements TranscriberService {
         MediaSampleRateHertz: this.config.sampleRate,
         MediaEncoding: 'pcm',
         AudioStream: audioStreamGenerator,
-
         ShowSpeakerLabel: true,
         MaxSpeakerLabels: 10
       };
 
-      // Language configuration: IdentifyLanguage and LanguageCode are mutually exclusive
+      // Language configuration: Only enable auto-detection if explicitly requested AND multiple languages provided
       if (this.config.identifyLanguage && this.config.candidateLanguages && this.config.candidateLanguages.length >= 2) {
-        // Only enable auto-detection if explicitly requested AND multiple languages provided
         params.IdentifyLanguage = true;
-        params.LanguageOptions = this.config.candidateLanguages.join(','); // AWS expects comma-separated string
+        params.LanguageOptions = this.config.candidateLanguages.join(',');
         log(`[AWSTranscribe] Language auto-detection enabled with options: ${this.config.candidateLanguages.join(', ')}`);
       } else {
-        // Use fixed language code (preferred language or first candidate)
         const fixedLanguage = this.config.languageCode || (this.config.candidateLanguages && this.config.candidateLanguages[0]) || 'en-US';
         params.LanguageCode = fixedLanguage;
         log(`[AWSTranscribe] Using fixed language code: ${fixedLanguage}`);
       }
 
-      // Create streaming command
       const command = new StartStreamTranscriptionCommand(params);
-
       // Start transcription
       const responsePromise = this.client.send(command);
-
       log('[AWSTranscribe] Stream started successfully');
       this.isConnected = true;
-
-      // Handle transcription results
       responsePromise
         .then((response:any) => {
           this.handleTranscriptStream(response.TranscriptResultStream, onTranscription, onError);
@@ -189,82 +138,32 @@ export class AWSTranscribeService implements TranscriberService {
         transcriptionStream: this.transcriptionStream,
       };
     } catch (error: any) {
-      // Ensure connection flag is reset on failure
       this.isConnected = false;
-
-      log(`[AWSTranscribe] ❌ Connection error: ${error.message || error}`);
-
-      // Detect deserialization errors specifically
+      log(`[AWSTranscribe] Connection error: ${error.message || error}`);
       const errorMessage = error.message || String(error);
       const isDeserializationError = errorMessage.toLowerCase().includes('deseriali') ||
                                      error.name === 'DeserializationError' ||
                                      error.__type === 'SerializationException';
 
       if (isDeserializationError) {
-        log(`[AWSTranscribe] ⚠️  DESERIALIZATION ERROR - Invalid parameter format detected!`);
-        log(`[AWSTranscribe] This usually means AWS rejected the request parameters.`);
-        log(`[AWSTranscribe] Sent parameters: ${JSON.stringify({
-          LanguageCode: params.LanguageCode,
-          IdentifyLanguage: params.IdentifyLanguage,
-          LanguageOptions: params.LanguageOptions,
-          MediaSampleRateHertz: params.MediaSampleRateHertz,
-          MediaEncoding: params.MediaEncoding
-        })}`);
-        log(`[AWSTranscribe] Common fixes:`);
-        log(`[AWSTranscribe]   - LanguageCode must be valid AWS language code (e.g., en-US, es-ES)`);
-        log(`[AWSTranscribe]   - LanguageOptions must be comma-separated string when IdentifyLanguage=true`);
-        log(`[AWSTranscribe]   - MediaSampleRateHertz must be 8000, 16000, 32000, 44100, or 48000`);
+        log(`[AWSTranscribe] DESERIALIZATION ERROR - Invalid parameter format detected!`);
       }
-
-      // Log all error properties to debug
-      log(`[AWSTranscribe] Error keys: ${Object.keys(error).join(', ')}`);
-
-      if (error.$response) {
-        log(`[AWSTranscribe] Response status: ${error.$response.statusCode}`);
-        log(`[AWSTranscribe] Response headers: ${JSON.stringify(error.$response.headers)}`);
-        log(`[AWSTranscribe] Response body: ${JSON.stringify(error.$response.body)}`);
-      }
-
-      // Try to access $metadata which AWS SDK v3 uses
-      if (error.$metadata) {
-        log(`[AWSTranscribe] Error metadata: ${JSON.stringify(error.$metadata)}`);
-      }
-
-      // Log the full error object structure
-      try {
-        log(`[AWSTranscribe] Full error object: ${JSON.stringify(error, null, 2)}`);
-      } catch (stringifyError) {
-        log(`[AWSTranscribe] Could not stringify error object`);
-      }
-
-      if (error.stack) {
-        log(`[AWSTranscribe] Error stack: ${error.stack}`);
-      }
-
       onError(error);
-
-      // Return socket reference to allow audio buffering (connection will retry)
       log('[AWSTranscribe] Returning socket reference for audio buffering despite connection error');
       throw error;
     }
   }
 
-  /**
-   * Create async generator for audio streaming
-   */
+  /* Create async generator for audio streaming */
   private createAudioStreamGenerator() {
     const audioChunks: Buffer[] = [];
     let resolveNext: any = null;
-
     // Store audio stream reference
     let chunkCount = 0;
     this.audioStream = {
       write: (chunk: Buffer) => {
         audioChunks.push(chunk);
         chunkCount++;
-        if (chunkCount % 100 === 0) {
-          log(`[AWSTranscribe] Received ${chunkCount} audio chunks (queue size: ${audioChunks.length})`);
-        }
         if (resolveNext) {
           resolveNext();
           resolveNext = null;
@@ -299,24 +198,13 @@ export class AWSTranscribeService implements TranscriberService {
           const chunk = audioChunks.shift();
           if (!chunk || chunk === null) {
             log('[AWSTranscribe] Audio generator reached end of stream');
-            break; // End of stream
+            break;
           }
 
           // Convert Buffer to Uint8Array for AWS SDK v3
           const uint8Array = new Uint8Array(chunk.buffer, chunk.byteOffset, chunk.byteLength);
           yieldCount++;
-          if (yieldCount === 1 || yieldCount % 10 === 0) {
-            log(`[AWSTranscribe] Yielding chunk ${yieldCount} to AWS (${uint8Array.byteLength} bytes, queue: ${audioChunks.length})`);
-            // Add hex dump for first chunk to verify PCM16 format
-            if (yieldCount === 1) {
-              const preview = Array.from(uint8Array.slice(0, 32)).map(b => b.toString(16).padStart(2, '0')).join(' ');
-              log(`[AWSTranscribe] First chunk hex (first 32 bytes): ${preview}`);
-            }
-          }
           yield { AudioEvent: { AudioChunk: uint8Array } };
-          if (yieldCount === 1 || yieldCount % 10 === 0) {
-            log(`[AWSTranscribe] Chunk ${yieldCount} yield completed, AWS SDK consumed it`);
-          }
         }
         log(`[AWSTranscribe] Generator finished after ${yieldCount} chunks`);
       } catch (error: any) {
@@ -326,9 +214,7 @@ export class AWSTranscribeService implements TranscriberService {
     })();
   }
 
-  /**
-   * Handle transcription result stream from AWS
-   */
+  /* Handle transcription result stream from AWS */
   private async handleTranscriptStream(
     stream: AsyncIterable<any>,
     onTranscription: (data: any) => void,
@@ -340,22 +226,18 @@ export class AWSTranscribeService implements TranscriberService {
           for (const result of event.TranscriptEvent.Transcript.Results) {
             if (!result.IsPartial && result.Alternatives && result.Alternatives.length > 0) {
               const transcript = result.Alternatives[0].Transcript;
-
               if (transcript && transcript.trim()) {
                 log(`[AWSTranscribe] Transcription: ${transcript}`);
 
-                // Extract AWS speaker label from Items (most common speaker in this segment)
+                // Extract AWS speaker label from Items
                 let awsSpeakerLabel = null;
                 if (result.Alternatives[0].Items && result.Alternatives[0].Items.length > 0) {
-                  // Count speaker occurrences
                   const speakerCounts: { [key: string]: number } = {};
                   result.Alternatives[0].Items.forEach((item: any) => {
                     if (item.Speaker) {
                       speakerCounts[item.Speaker] = (speakerCounts[item.Speaker] || 0) + 1;
                     }
                   });
-
-                  // Get most common speaker (if any speakers found)
                   const speakers = Object.keys(speakerCounts);
                   if (speakers.length > 0) {
                     awsSpeakerLabel = speakers.reduce((a, b) =>
@@ -364,20 +246,14 @@ export class AWSTranscribeService implements TranscriberService {
                   }
                 }
 
-                // Correlate AWS speaker label with real participant names
+                // Correlate AWS speaker label with real participant names. Use real name if available, otherwise fall back to AWS label
                 // AWS returns timestamps in seconds, convert to milliseconds for correlation
                 const startMs = (result.StartTime || 0) * 1000;
                 const endMs = (result.EndTime || 0) * 1000;
                 const realSpeaker = this.findSpeakerAtTime(startMs, endMs);
-
-                // Use real name if available, otherwise fall back to AWS label
                 const speaker = realSpeaker || awsSpeakerLabel;
-
-                // Extract language from result or fall back to config
                 const language = result.LanguageCode || this.config.languageCode || 'en-US';
-
                 log(`[AWSTranscribe] Speaker: ${speaker || 'unknown'} (AWS: ${awsSpeakerLabel || 'none'}), Language: ${language}`);
-
                 // Format in WhisperLive-compatible format for unified callback
                 const formattedData = {
                   type: 'transcription',
@@ -405,9 +281,7 @@ export class AWSTranscribeService implements TranscriberService {
     }
   }
 
-  /**
-   * Send audio data to AWS Transcribe
-   */
+  /* Send audio data to AWS Transcribe */
   async sendAudio(socket: any, audioData: Buffer): Promise<void> {
     if (!this.isConnected || !this.audioStream) {
       log('[AWSTranscribe] Not connected, cannot send audio');
@@ -421,9 +295,7 @@ export class AWSTranscribeService implements TranscriberService {
     }
   }
 
-  /**
-   * Close AWS Transcribe connection
-   */
+  /* Close AWS Transcribe connection */
   async close(socket: any): Promise<void> {
     log('[AWSTranscribe] Closing connection');
 
@@ -431,7 +303,6 @@ export class AWSTranscribeService implements TranscriberService {
       if (this.audioStream) {
         this.audioStream.end();
       }
-
       this.isConnected = false;
       log('[AWSTranscribe] Connection closed');
     } catch (error: any) {
@@ -439,16 +310,13 @@ export class AWSTranscribeService implements TranscriberService {
     }
   }
 
-  /**
-   * Get provider name
-   */
+  /* Get provider name */
   getProvider(): string {
     return 'aws';
   }
 
-  /**
-   * Send speaker event for correlation with AWS transcription
-   * This allows mapping AWS's generic speaker labels (spk_0, spk_1) to real participant names
+  /* Send speaker event for correlation with AWS transcription. 
+  This allows mapping AWS's generic speaker labels (spk_0, spk_1) to real participant names
    */
   sendSpeakerEvent(
     eventType: string,
@@ -457,42 +325,29 @@ export class AWSTranscribeService implements TranscriberService {
     relativeTimestampMs: number,
     botConfig: BotConfig
   ): boolean {
-    // Store speaker event for later correlation
     this.speakerEvents.push({
       timestamp: relativeTimestampMs,
       eventType,
       participantName,
       participantId,
     });
-
     log(`[AWSTranscribe] Speaker event: ${eventType} - ${participantName} at ${relativeTimestampMs}ms`);
-
-    // Keep only last 1000 events to prevent memory issues
     if (this.speakerEvents.length > 1000) {
       this.speakerEvents.shift();
     }
-
     return true;
   }
 
-  /**
-   * Find the real speaker name for a given time range
-   * Correlates AWS speaker labels with actual participant names based on timing
-   */
+  /* Correlates AWS speaker labels with actual participant names based on timing */
   private findSpeakerAtTime(startMs: number, endMs: number): string | null {
     if (this.speakerEvents.length === 0) {
       return null;
     }
-
-    // Find the most recent SPEAKER_START event before or during this segment
     let currentSpeaker: string | null = null;
     let bestMatchTime = -1;
 
     for (const event of this.speakerEvents) {
-      // Look for events that started before or during this transcription segment
-      // Allow a small window (±500ms) for timing discrepancies
       const timeDiff = event.timestamp - startMs;
-
       if (timeDiff <= 500 && timeDiff >= -500) {
         if (event.eventType === 'SPEAKER_START') {
           // Found a speaker who started around this time
@@ -517,7 +372,6 @@ export class AWSTranscribeService implements TranscriberService {
     if (currentSpeaker) {
       log(`[AWSTranscribe] Correlation: Segment at ${startMs}-${endMs}ms matched to ${currentSpeaker}`);
     }
-
     return currentSpeaker;
   }
 }

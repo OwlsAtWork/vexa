@@ -25,17 +25,13 @@ export async function startTeamsRecording(page: Page, botConfig: BotConfig): Pro
   // Create transcriber using factory (respects TRANSCRIBER_PROVIDER env var)
   const transcriber: TranscriberService = TranscriberFactory.create();
   const provider = transcriber.getProvider();
-
   log(`[Node.js] Using transcriber: ${provider}`);
-
-  // Initialize transcriber
   const initialized = await transcriber.initialize(botConfig);
   if (!initialized) {
     throw new Error(`Failed to initialize ${provider} transcriber`);
   }
 
   log(`[Node.js] ${provider} transcriber initialized successfully`);
-
   // For WhisperLive, we need the URL for browser-side WebSocket
   let whisperLiveUrl: string | null = null;
   if (provider === 'whisper_live') {
@@ -45,7 +41,6 @@ export async function startTeamsRecording(page: Page, botConfig: BotConfig): Pro
   }
 
   log(`Starting Teams recording with ${provider} transcription`);
-
   await ensureBrowserUtils(page, require('path').join(__dirname, '../../browser-utils.global.js'));
 
   // For non-WhisperLive transcribers, set up Node.js-side connection and audio bridge
@@ -74,7 +69,7 @@ export async function startTeamsRecording(page: Page, botConfig: BotConfig): Pro
       relativeTimestampMs: number
     ) => {
       try {
-        // Send speaker event to transcriber service (AWS, Deepgram, etc.)
+        // Send speaker event to transcriber service
         if (typeof transcriber.sendSpeakerEvent === 'function') {
           transcriber.sendSpeakerEvent(
             eventType,
@@ -160,10 +155,9 @@ export async function startTeamsRecording(page: Page, botConfig: BotConfig): Pro
               // Send transcription to transcription-collector via Redis Stream
               if (redisClient && data.segments && data.segments.length > 0) {
                 try {
-                  // Wrap in WhisperLive-compatible format with MeetingToken for authentication
                   const payloadObject = {
                     type: 'transcription',
-                    token: botConfig.token, // MeetingToken (HS256 JWT) for authentication
+                    token: botConfig.token,
                     platform: botConfig.platform,
                     meeting_id: botConfig.meeting_id,
                     uid: botConfig.connectionId,
@@ -171,16 +165,14 @@ export async function startTeamsRecording(page: Page, botConfig: BotConfig): Pro
                       text: seg.text?.trim() || '',
                       start: seg.start || 0,
                       end: seg.end || 0,
-                      speaker: seg.speaker || null, // Include speaker name from AWS correlation
+                      speaker: seg.speaker || null,
                       language: seg.language || null,
-                      completed: true // AWS/Deepgram/ElevenLabs provide final transcriptions
+                      completed: true
                     })).filter((seg: any) => seg.text) // Only send non-empty segments
                   };
 
                   // Serialize payload to JSON string (WhisperLive format)
                   const payloadJson = JSON.stringify(payloadObject);
-
-                  // Send to Redis Stream with 'payload' field
                   await redisClient.xAdd('transcription_segments', '*', {
                     payload: payloadJson
                   });
@@ -201,10 +193,8 @@ export async function startTeamsRecording(page: Page, botConfig: BotConfig): Pro
             nodeTranscriberSocket = socket;
             log(`[Node.js] ${provider} connection established, sending ${audioBufferQueue.length} buffered chunks...`);
 
-            // Filter out silent chunks from buffer before sending to AWS
-            // AWS Transcribe will timeout if it only receives silence for 15 seconds
+            // Filter out silent chunks from buffer before sending to AWS. AWS Transcribe will timeout if it only receives silence for 15 seconds
             const nonSilentChunks = audioBufferQueue.filter((bufferedChunk) => {
-              // Check if chunk contains actual audio (not just silence)
               let hasAudio = false;
               for (let i = 0; i < bufferedChunk.length; i += 2) {
                 const sample = bufferedChunk.readInt16LE(i);
@@ -228,9 +218,7 @@ export async function startTeamsRecording(page: Page, botConfig: BotConfig): Pro
           });
         }
 
-        // Send current chunk (only if not silent to avoid AWS timeout)
         if (isAwsConnected && nodeTranscriberSocket) {
-          // Only send non-silent chunks to AWS Transcribe to avoid 15-second silence timeout
           if (!isSilent) {
             await transcriber.sendAudio(nodeTranscriberSocket, pcm16Buffer);
           }
@@ -391,7 +379,7 @@ export async function startTeamsRecording(page: Page, botConfig: BotConfig): Pro
             // Setup audio data processing
             audioService.setupAudioDataProcessor(async (audioData: Float32Array, sessionStartTime: number | null) => {
               if (useNodeBridge) {
-                // Use Node.js bridge for AWS/Deepgram/ElevenLabs
+                // Use Node.js bridge for Custom Transcribers (AWS/Deepgram/ElevenLabs)
                 try {
                   // Convert Float32Array to regular array for JSON serialization
                   const audioArray = Array.from(audioData);
@@ -773,7 +761,7 @@ export async function startTeamsRecording(page: Page, botConfig: BotConfig): Pro
 
                 try {
                   if (useNodeBridge) {
-                    // For AWS/Deepgram/ElevenLabs: send to Node.js transcriber
+                    // For Custom Transcribers (like AWS) send to Node.js transcriber
                     (window as any).sendSpeakerEventToNodeTranscriber(
                       eventType,
                       identity.name,

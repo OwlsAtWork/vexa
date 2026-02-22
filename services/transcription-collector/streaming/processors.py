@@ -268,7 +268,7 @@ async def process_stream_message(message_id: str, message_data: Dict[str, Any], 
                      # WhisperLive provides this; we must propagate it so the UI can observe
                      # partial -> completed transitions (e.g., SAME_OUTPUT_THRESHOLD confirmation).
                      completed_content = bool(segment.get('completed', False))
-                     # Extract speaker field if provided by transcriber (AWS/Deepgram/ElevenLabs)
+                     # Extract speaker field if provided by transcriber
                      incoming_speaker = segment.get('speaker')
                  except (ValueError, TypeError) as time_err:
                      logger.warning(f"[Msg {message_id}/Meet {internal_meeting_id}] Skipping segment {i} invalid time format: {time_err} - Segment: {segment}")
@@ -289,7 +289,7 @@ async def process_stream_message(message_id: str, message_data: Dict[str, Any], 
                  mapping_status: str = STATUS_UNKNOWN
                  mapped_speaker_name = None
 
-                 # Priority 1: Use speaker field if already provided by transcriber (AWS/Deepgram/ElevenLabs do their own correlation)
+                 # Priority 1: Use speaker field if already provided by transcriber
                  if incoming_speaker:
                     mapped_speaker_name = incoming_speaker
                     mapping_status = "provided"

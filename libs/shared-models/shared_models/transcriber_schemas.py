@@ -1,19 +1,14 @@
-"""
-Enhanced schemas for dynamic transcriber configuration.
-Add these to your existing schemas.py or import from this file.
-"""
+""" Enhanced schemas for dynamic transcriber configuration. """
+from enum import Enum
 from typing import Optional, Dict, Any, List
 from pydantic import BaseModel, Field, field_validator
-from enum import Enum
-
 
 class TranscriberProvider(str, Enum):
     """Supported transcription providers"""
-    WHISPER_LIVE = "whisper_live"  # Default - existing implementation
-    AWS = "aws"  # AWS Transcribe
-    DEEPGRAM = "deepgram"  # Deepgram
-    ELEVENLABS = "elevenlabs"  # ElevenLabs
-
+    WHISPER_LIVE = "whisper_live"
+    AWS = "aws"
+    DEEPGRAM = "deepgram"
+    ELEVENLABS = "elevenlabs"
 
 class S3Config(BaseModel):
     """Configuration for S3 storage of transcriptions"""
@@ -31,20 +26,17 @@ class S3Config(BaseModel):
             raise ValueError("Bucket name must start and end with alphanumeric character")
         return v.lower()
 
-
 class BaseTranscriberConfig(BaseModel):
     """Base configuration for all transcribers"""
     provider: TranscriberProvider = Field(..., description="Transcription provider to use")
     language: Optional[str] = Field(None, description="Language code (e.g., 'en', 'es'). If not specified, auto-detect")
     sampling_rate: int = Field(16000, description="Audio sampling rate in Hz (8000, 16000, 22050, etc.)")
 
-
 class WhisperLiveConfig(BaseTranscriberConfig):
     """Configuration for WhisperLive (default transcriber)"""
     provider: TranscriberProvider = Field(TranscriberProvider.WHISPER_LIVE, description="Must be 'whisper_live'")
     task: Optional[str] = Field("transcribe", description="Task: 'transcribe' or 'translate'")
     # Add any WhisperLive-specific parameters here
-
 
 class AWSTranscriberConfig(BaseTranscriberConfig):
     """Configuration for AWS Transcribe"""
@@ -66,7 +58,6 @@ class AWSTranscriberConfig(BaseTranscriberConfig):
             raise ValueError(f"AWS language code must be in format 'en-US', got: {v}")
         return v
 
-
 class DeepgramTranscriberConfig(BaseTranscriberConfig):
     """Configuration for Deepgram"""
     provider: TranscriberProvider = Field(TranscriberProvider.DEEPGRAM, description="Must be 'deepgram'")
@@ -75,7 +66,6 @@ class DeepgramTranscriberConfig(BaseTranscriberConfig):
     punctuate: bool = Field(True, description="Enable automatic punctuation")
     diarize: bool = Field(False, description="Enable speaker diarization")
 
-
 class ElevenLabsTranscriberConfig(BaseTranscriberConfig):
     """Configuration for ElevenLabs"""
     provider: TranscriberProvider = Field(TranscriberProvider.ELEVENLABS, description="Must be 'elevenlabs'")
@@ -83,10 +73,8 @@ class ElevenLabsTranscriberConfig(BaseTranscriberConfig):
     identify_language: bool = Field(True, description="Enable automatic language identification")
     upsample_to_16k: bool = Field(False, description="Upsample 8kHz MULAW to 16kHz PCM (better for non-English)")
 
-
 class TranscriberConfig(BaseModel):
-    """Union type for all transcriber configurations"""
-    # This will hold the actual transcriber config
+    """Union type for all transcriber configurations. This will hold the actual transcriber config"""
     config: Dict[str, Any] = Field(..., description="Transcriber-specific configuration")
 
     @classmethod
@@ -98,26 +86,13 @@ class TranscriberConfig(BaseModel):
         """Extract provider from config"""
         return TranscriberProvider(self.config.get("provider"))
 
-
 class MeetingCreateEnhanced(BaseModel):
-    """
-    Enhanced meeting creation request with transcriber and S3 configuration.
-
-    This extends the basic meeting creation to support:
-    - Dynamic transcriber selection (WhisperLive, AWS, Deepgram, ElevenLabs)
-    - Custom S3 bucket configuration for transcription storage
-    - Provider-specific transcription parameters
-    """
-    # Meeting configuration
+    """ Enhanced meeting creation request with transcriber and S3 configuration. """
     platform: str = Field(..., description="Platform: 'google_meet', 'zoom', or 'teams'")
     native_meeting_id: str = Field(..., description="Platform-specific meeting ID")
     passcode: Optional[str] = Field(None, description="Meeting passcode (Teams only)")
     bot_name: Optional[str] = Field(None, description="Optional bot display name")
-
-    # S3 configuration
     s3_config: S3Config = Field(..., description="S3 bucket configuration for transcription storage")
-
-    # Transcriber configuration (using discriminated union pattern)
     transcriber_config: Dict[str, Any] = Field(
         ...,
         description="Transcriber configuration. Must include 'provider' field"
@@ -143,8 +118,6 @@ class MeetingCreateEnhanced(BaseModel):
         """Extract transcriber provider from config"""
         return TranscriberProvider(self.transcriber_config['provider'])
 
-
-# Response models
 class MeetingResponseEnhanced(BaseModel):
     """Enhanced meeting response including transcriber info"""
     meeting_id: str
@@ -154,7 +127,6 @@ class MeetingResponseEnhanced(BaseModel):
     transcriber_provider: str
     s3_bucket: str
     created_at: str
-
 
 # Example usage documentation
 EXAMPLE_REQUESTS = {

@@ -16,7 +16,6 @@ import {
 // Modified to use new services - Google Meet recording functionality
 export async function startGoogleRecording(page: Page, botConfig: BotConfig): Promise<void> {
   // Initialize transcription service on Node.js side
-  // Priority: botConfig.transcriptionServiceUrl > TRANSCRIPTION_SERVICE_URL > WHISPER_LIVE_URL
   const whisperLiveService = new WhisperLiveService({
     transcriptionServiceUrl: botConfig.transcriptionServiceUrl,
     whisperLiveUrl: process.env.WHISPER_LIVE_URL

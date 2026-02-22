@@ -246,9 +246,8 @@ async def start_bot_container(
     if transcriber_env:
         logger.info(f"Adding {len(transcriber_env)} transcriber environment variables to container")
         for key, value in transcriber_env.items():
-            if value:  # Only add non-empty values
+            if value:
                 environment.append(f"{key}={value}")
-                # Log keys (but not full values for security)
                 if 'KEY' in key.upper() or 'SECRET' in key.upper():
                     logger.debug(f"  Added env var: {key}=***")
                 else:

@@ -24,12 +24,7 @@ from shared_models.schemas import (
     BotStatusResponse # ADDED: Import response model for documentation
 )
 
-# Import enhanced schemas for dynamic transcriber configuration
-from shared_models.transcriber_schemas import (
-    MeetingCreateEnhanced,
-    TranscriberProvider,
-    EXAMPLE_REQUESTS
-)
+from shared_models.transcriber_schemas import MeetingCreateEnhanced
 
 load_dotenv()
 
@@ -226,35 +221,8 @@ async def forward_request(client: httpx.AsyncClient, method: str, url: str, requ
 # --- Root Endpoint --- 
 @app.get("/", tags=["General"], summary="API Gateway Root")
 async def root():
-    """Provides API information and available endpoints."""
-    return {
-        "message": "Welcome to the Vexa API Gateway",
-        "version": "1.2.0",
-        "endpoints": {
-            "bots": {
-                "POST /bots": "Create bot with basic configuration (legacy)",
-                "POST /v2/bots": "Create bot with custom transcriber and S3 config (NEW)",
-                "DELETE /bots/{platform}/{native_meeting_id}": "Stop a bot",
-                "PUT /bots/{platform}/{native_meeting_id}/config": "Update bot configuration",
-                "GET /bots/status": "Get running bots status"
-            },
-            "transcriptions": {
-                "GET /meetings": "List user's meetings",
-                "GET /transcripts/{platform}/{native_meeting_id}": "Get transcript for a meeting"
-            },
-            "admin": {
-                "POST /admin/users": "Create new user (admin only)",
-                "GET /admin/users": "List all users (admin only)"
-            }
-        },
-        "transcribers_supported": {
-            "whisper_live": "Self-hosted Whisper (default)",
-            "aws": "AWS Transcribe",
-            "deepgram": "Deepgram",
-            "elevenlabs": "ElevenLabs"
-        },
-        "documentation": "/docs"
-    }
+    """Provides a welcome message for the Vexa API Gateway."""
+    return {"message": "Welcome to the Vexa API Gateway"}
 
 # --- Bot Manager Routes --- 
 @app.post("/bots",
@@ -286,45 +254,15 @@ async def request_bot_proxy(request: Request):
 # --- NEW Enhanced Bot Creation with Dynamic Transcriber Selection ---
 @app.post("/v2/bots",
          tags=["Bot Management"],
-         summary="[NEW] Request a bot with custom transcriber and S3 config",
-         description="""
-         Enhanced bot creation API that supports:
-         - Dynamic transcriber selection (WhisperLive, AWS Transcribe, Deepgram, ElevenLabs)
-         - Custom S3 bucket configuration for transcription storage
-         - Provider-specific transcription parameters
-
-         This endpoint allows you to specify which transcription provider to use for each meeting
-         and where to store the resulting transcriptions.
-         """,
+         summary="Request a bot with custom transcriber and S3 config",
+         description=""" Enhanced bot creation API that supports dynamic transcriber selection and custom S3 bucket configuration for transcription storage. """,
          status_code=status.HTTP_201_CREATED,
          dependencies=[Depends(api_key_scheme)],
          openapi_extra={
              "requestBody": {
                  "content": {
                      "application/json": {
-                         "schema": MeetingCreateEnhanced.schema(),
-                         "examples": {
-                             "whisper_live": {
-                                 "summary": "WhisperLive (Default)",
-                                 "description": "Use the default WhisperLive transcriber with custom S3 storage",
-                                 "value": EXAMPLE_REQUESTS["whisper_live"]
-                             },
-                             "aws_transcribe": {
-                                 "summary": "AWS Transcribe",
-                                 "description": "Use AWS Transcribe with language identification and denoising",
-                                 "value": EXAMPLE_REQUESTS["aws"]
-                             },
-                             "deepgram": {
-                                 "summary": "Deepgram",
-                                 "description": "Use Deepgram with Nova-2 model, punctuation, and diarization",
-                                 "value": EXAMPLE_REQUESTS["deepgram"]
-                             },
-                             "elevenlabs": {
-                                 "summary": "ElevenLabs",
-                                 "description": "Use ElevenLabs with high-accuracy transcription",
-                                 "value": EXAMPLE_REQUESTS["elevenlabs"]
-                             }
-                         }
+                         "schema": MeetingCreateEnhanced.schema()
                      }
                  },
                  "required": True,
@@ -332,18 +270,7 @@ async def request_bot_proxy(request: Request):
              },
          })
 async def request_bot_enhanced(request: Request):
-    """
-    Forward enhanced request to Bot Manager to start a bot with custom transcriber configuration.
-
-    This endpoint supports:
-    - WhisperLive (default, self-hosted)
-    - AWS Transcribe (requires AWS credentials)
-    - Deepgram (requires DEEPGRAM_API_KEY)
-    - ElevenLabs (requires ELEVENLABS_API_KEY)
-
-    The transcriber configuration is validated and forwarded to the Bot Manager,
-    which will launch a bot container with the appropriate transcription provider.
-    """
+    """ Forward enhanced request to Bot Manager to start a bot with custom transcriber configuration. """
     url = f"{BOT_MANAGER_URL}/v2/bots"
     return await forward_request(app.state.http_client, "POST", url, request)
 # --- END Enhanced Bot Creation ---

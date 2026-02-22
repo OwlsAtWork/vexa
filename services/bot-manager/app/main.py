@@ -691,7 +691,7 @@ async def request_bot(
 @app.post("/v2/bots",
           response_model=MeetingResponse,
           status_code=status.HTTP_201_CREATED,
-          summary="[NEW] Request a bot with custom transcriber and S3 config",
+          summary="Request a bot with custom transcriber and S3 config",
           description="Enhanced bot creation that supports dynamic transcriber selection and S3 configuration",
           dependencies=[Depends(get_user_and_token)])
 async def request_bot_enhanced(
@@ -699,30 +699,17 @@ async def request_bot_enhanced(
     auth_data: tuple[str, User] = Depends(get_user_and_token),
     db: AsyncSession = Depends(get_db)
 ):
-    """
-    Enhanced bot creation endpoint with dynamic transcriber configuration.
-
-    Supports:
-    - WhisperLive (default, self-hosted)
-    - AWS Transcribe (requires AWS credentials)
-    - Deepgram (requires DEEPGRAM_API_KEY)
-    - ElevenLabs (requires ELEVENLABS_API_KEY)
-
+    """ Enhanced bot creation endpoint with dynamic transcriber configuration.
     Also allows specifying custom S3 bucket for transcription storage.
     """
     user_token, current_user = auth_data
-
-    # Extract transcriber provider
     transcriber_provider = req.get_transcriber_provider()
 
     logger.info(
         f"Received enhanced bot request for platform '{req.platform}' "
         f"with transcriber '{transcriber_provider.value}' from user {current_user.id}"
     )
-
     native_meeting_id = req.native_meeting_id
-
-    # Construct meeting URL
     constructed_url = Platform.construct_meeting_url(req.platform, native_meeting_id, req.passcode)
     if not constructed_url:
         logger.error(f"Invalid meeting URL for platform {req.platform} and ID {native_meeting_id}")
@@ -818,15 +805,10 @@ async def request_bot_enhanced(
     # Start bot container with transcriber config
     container_id = None
     connection_id = None
-
+    logger.info(f"Starting bot container for meeting {meeting_id} with {transcriber_provider.value}...")
+    language = req.transcriber_config.get('language')
+    task = req.transcriber_config.get('task', 'transcribe')
     try:
-        logger.info(f"Starting bot container for meeting {meeting_id} with {transcriber_provider.value}...")
-
-        # Note: start_bot_container will need to be updated to accept transcriber_env
-        # For now, we'll pass the language from transcriber_config
-        language = req.transcriber_config.get('language')
-        task = req.transcriber_config.get('task', 'transcribe')
-
         container_id, connection_id = await start_bot_container(
             user_id=current_user.id,
             meeting_id=meeting_id,
@@ -839,94 +821,72 @@ async def request_bot_enhanced(
             task=task,
             transcriber_env=transcriber_env  # Now passing transcriber environment variables
         )
+    except Exception as e:
+        logger.error(f"Container launch failed for meeting {meeting_id}: {e}", exc_info=True)
+        new_meeting.status = MeetingStatus.FAILED.value
+        await db.commit()
 
-        container_start_time = datetime.utcnow()
-        logger.info(f"Container started: ID={container_id}, Connection={connection_id}")
+        await publish_meeting_status_change(
+            meeting_id, MeetingStatus.FAILED.value, redis_client,
+            req.platform, native_meeting_id, current_user.id
+        )
 
-        if not container_id or not connection_id:
-            error_msg = "Failed to start bot container"
-            logger.error(f"{error_msg} for meeting {meeting_id}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to start bot container"
+        )
 
-            new_meeting.status = MeetingStatus.FAILED.value
-            await db.commit()
-            await publish_meeting_status_change(
-                meeting_id, MeetingStatus.FAILED.value, redis_client,
-                req.platform, native_meeting_id, current_user.id
-            )
+    container_start_time = datetime.utcnow()
+    logger.info(f"Container started: ID={container_id}, Connection={connection_id}")
 
-            raise HTTPException(
-                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail=error_msg
-            )
+    if not container_id or not connection_id:
+        new_meeting.status = MeetingStatus.FAILED.value
+        await db.commit()
+        await publish_meeting_status_change(
+            meeting_id, MeetingStatus.FAILED.value, redis_client,
+            req.platform, native_meeting_id, current_user.id
+        )
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to start bot container for meeting {meeting_id}"
+        )
 
-        # CRITICAL: Record session start for status callbacks to work
-        asyncio.create_task(_record_session_start(meeting_id, connection_id))
-        logger.info(f"Scheduled background task to record session start for meeting {meeting_id}, session {connection_id}")
+    asyncio.create_task(_record_session_start(meeting_id, connection_id))
+    logger.info(f"Scheduled background task to record session start for meeting {meeting_id}, session {connection_id}")
 
-        # Update meeting with container info
+    try:
         new_meeting.bot_container_id = container_id
         new_meeting.start_time = container_start_time
         await db.commit()
         await db.refresh(new_meeting)
-
-        logger.info(f"Bot container {container_id} started successfully for meeting {meeting_id}")
-
-        # Return response
-        return MeetingResponse(
-            id=meeting_id,
-            user_id=current_user.id,
-            platform=req.platform,
-            native_meeting_id=native_meeting_id,
-            status=new_meeting.status,
-            bot_container_id=container_id,
-            start_time=container_start_time,
-            end_time=None,
-            created_at=new_meeting.created_at,
-            updated_at=new_meeting.updated_at
-        )
-
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Unexpected error starting bot for meeting {meeting_id}: {e}", exc_info=True)
-
-        try:
-            meeting_to_update = await db.get(Meeting, meeting_id)
-            if meeting_to_update and meeting_to_update.status not in [
-                MeetingStatus.FAILED.value,
-                MeetingStatus.COMPLETED.value
-            ]:
-                meeting_to_update.status = MeetingStatus.FAILED.value
-                if container_id:
-                    meeting_to_update.bot_container_id = container_id
-                await db.commit()
-                await publish_meeting_status_change(
-                    meeting_id, MeetingStatus.FAILED.value, redis_client,
-                    req.platform, native_meeting_id, current_user.id
-                )
-        except Exception as db_err:
-            logger.error(f"Failed to update meeting {meeting_id} status to failed: {db_err}")
+    except Exception as db_err:
+        logger.error(f"DB update failed after container start: {db_err}", exc_info=True)
+        new_meeting.status = MeetingStatus.FAILED.value
+        await db.commit()
 
         raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail={"status": "error", "message": f"An unexpected error occurred: {str(e)}", "meeting_id": meeting_id}
+            status_code=500,
+            detail="Container started but failed to persist meeting state"
         )
 
+    logger.info(f"Bot container {container_id} started successfully for meeting {meeting_id}")
+    return MeetingResponse(
+        id=meeting_id,
+        user_id=current_user.id,
+        platform=req.platform,
+        native_meeting_id=native_meeting_id,
+        status=new_meeting.status,
+        bot_container_id=container_id,
+        start_time=container_start_time,
+        end_time=None,
+        created_at=new_meeting.created_at,
+        updated_at=new_meeting.updated_at
+    )
 
 def get_transcription_service_url(provider: TranscriberProvider) -> str:
-    """
-    Get transcription service URL for the given provider.
-
-    Can be configured via environment variables:
-    - WHISPER_LIVE_URL (for whisper_live provider)
-    - AWS_TRANSCRIBE_URL (for aws provider)
-    - DEEPGRAM_URL (for deepgram provider)
-    - ELEVENLABS_URL (for elevenlabs provider)
-    - TRANSCRIPTION_GATEWAY_URL (unified gateway for all providers)
-
+    """ Get transcription service URL for the given provider.
     Returns the appropriate WebSocket URL for the transcription service.
     """
-    # Try provider-specific URL first
     env_var_map = {
         TranscriberProvider.WHISPER_LIVE: 'WHISPER_LIVE_URL',
         TranscriberProvider.AWS: 'AWS_TRANSCRIBE_URL',
@@ -940,18 +900,14 @@ def get_transcription_service_url(provider: TranscriberProvider) -> str:
         if provider_url:
             logger.info(f"Using provider-specific URL for {provider.value}: {provider_url}")
             return provider_url
-
     # Fall back to unified gateway
     gateway_url = os.getenv('TRANSCRIPTION_GATEWAY_URL')
     if gateway_url:
         logger.info(f"Using unified transcription gateway for {provider.value}: {gateway_url}")
         return gateway_url
-
-    # For AWS/Deepgram/ElevenLabs, return empty string (they don't use WebSocket URLs)
     if provider in [TranscriberProvider.AWS, TranscriberProvider.DEEPGRAM, TranscriberProvider.ELEVENLABS]:
         logger.info(f"Provider {provider.value} uses SDK, no WebSocket URL needed")
         return ""
-
     # Default to WhisperLive only for whisper_live provider
     default_url = os.getenv('WHISPER_LIVE_URL', 'ws://whisperlive.internal/ws')
     logger.info(f"Using default WhisperLive URL for {provider.value}: {default_url}")
@@ -965,20 +921,16 @@ def prepare_transcriber_environment(
 ) -> dict:
     """
     Prepare environment variables for bot container with transcriber configuration.
-
     This will be passed to the bot container to configure which transcriber to use.
     """
     env = {
-        # Transcriber configuration
         'TRANSCRIBER_PROVIDER': transcriber_provider.value,
         'TRANSCRIBER_CONFIG': json.dumps(transcriber_config),
-
         # S3 configuration
         'S3_BUCKET_NAME': s3_config.bucket_name,
         'S3_REGION': s3_config.region,
         'S3_PREFIX': s3_config.prefix or '',
 
-        # Pass through API keys (these should be in bot-manager's environment)
         'AWS_ACCESS_KEY_ID': os.getenv('AWS_ACCESS_KEY_ID', ''),
         'AWS_SECRET_ACCESS_KEY': os.getenv('AWS_SECRET_ACCESS_KEY', ''),
         'AWS_SESSION_TOKEN': os.getenv('AWS_SESSION_TOKEN', ''),  # Required for temporary credentials
@@ -991,19 +943,16 @@ def prepare_transcriber_environment(
     transcription_service_url = get_transcription_service_url(transcriber_provider)
     if transcription_service_url:
         env['TRANSCRIPTION_SERVICE_URL'] = transcription_service_url
-    # For AWS/Deepgram/ElevenLabs, don't set TRANSCRIPTION_SERVICE_URL
 
     # Add provider-specific environment variables
     if transcriber_provider == TranscriberProvider.AWS:
         env['AWS_IDENTIFY_LANGUAGE'] = str(transcriber_config.get('identify_language', True))
         env['AWS_DENOISER_ENABLED'] = str(transcriber_config.get('denoiser_enabled', False))
         env['AWS_DENOISER_TYPE'] = transcriber_config.get('denoiser_type', 'rnnoise')
-
     elif transcriber_provider == TranscriberProvider.DEEPGRAM:
         env['DEEPGRAM_MODEL'] = transcriber_config.get('model', 'nova-2')
         env['DEEPGRAM_PUNCTUATE'] = str(transcriber_config.get('punctuate', True))
         env['DEEPGRAM_DIARIZE'] = str(transcriber_config.get('diarize', False))
-
     elif transcriber_provider == TranscriberProvider.ELEVENLABS:
         env['ELEVENLABS_MODEL'] = transcriber_config.get('model', 'scribe_v2_realtime')
         env['ELEVENLABS_UPSAMPLE'] = str(transcriber_config.get('upsample_to_16k', False))

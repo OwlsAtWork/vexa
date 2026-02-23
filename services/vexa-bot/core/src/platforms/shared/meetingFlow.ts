@@ -171,7 +171,6 @@ export async function runMeetingFlow(
     try {
       const racers = [strategies.startRecording(page, botConfig), removalPromise];
       if (meetingEndPromise) racers.push(meetingEndPromise);
-
       await Promise.race(racers);
 
       // Normal completion
@@ -184,7 +183,6 @@ export async function runMeetingFlow(
         await gracefulLeaveFunction(page, 0, "meeting_ended_by_host");
         return;
       }
-
       if (msg === tokens.removedToken || msg.includes(tokens.removedToken)) {
         await gracefulLeaveFunction(page, 0, "removed_by_admin");
         return;

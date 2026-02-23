@@ -5,6 +5,7 @@ from pydantic import BaseModel, Field
 import logging
 import os
 import base64
+from datetime import datetime, timezone
 from typing import Optional, List, Dict, Any
 import redis.asyncio as aioredis
 import asyncio
@@ -36,8 +37,7 @@ from shared_models.schemas import (
 
 # Import enhanced schemas for dynamic transcriber configuration
 from shared_models.transcriber_schemas import (
-    MeetingCreateEnhanced,
-    TranscriberProvider
+    MeetingCreateEnhanced, TranscriberProvider
 )
 from app.auth import get_user_and_token # MODIFIED
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -687,7 +687,7 @@ async def request_bot(
             detail={"status": "error", "message": f"An unexpected error occurred during bot startup: {str(e)}", "meeting_id": meeting_id}
         )
 
-# --- NEW Enhanced Bot Creation with Dynamic Transcriber Selection ---
+# --- Enhanced Bot Creation with Dynamic Transcriber Selection ---
 @app.post("/v2/bots",
           response_model=MeetingResponse,
           status_code=status.HTTP_201_CREATED,
@@ -705,14 +705,14 @@ async def request_bot_enhanced(
     user_token, current_user = auth_data
     transcriber_provider = req.get_transcriber_provider()
 
-    logger.info(
+    logger.debug(
         f"Received enhanced bot request for platform '{req.platform}' "
         f"with transcriber '{transcriber_provider.value}' from user {current_user.id}"
     )
     native_meeting_id = req.native_meeting_id
     constructed_url = Platform.construct_meeting_url(req.platform, native_meeting_id, req.passcode)
     if not constructed_url:
-        logger.error(f"Invalid meeting URL for platform {req.platform} and ID {native_meeting_id}")
+        logger.debug(f"Invalid meeting URL for platform {req.platform} and ID {native_meeting_id}")
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail=f"Invalid platform/native_meeting_id combination: cannot construct meeting URL"
@@ -752,7 +752,7 @@ async def request_bot_enhanced(
         count_result = await db.execute(count_stmt)
         active_count = int(count_result.scalar() or 0)
         if active_count >= user_limit:
-            logger.warning(f"User {current_user.id} reached concurrent bot limit {active_count}/{user_limit}")
+            logger.debug(f"User {current_user.id} reached concurrent bot limit {active_count}/{user_limit}")
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail=f"User has reached the maximum concurrent bot limit ({user_limit})"
@@ -781,7 +781,7 @@ async def request_bot_enhanced(
     await db.refresh(new_meeting)
     meeting_id = new_meeting.id
 
-    logger.info(
+    logger.debug(
         f"Created meeting {meeting_id} with transcriber '{transcriber_provider.value}' "
         f"and S3 bucket '{req.s3_config.bucket_name}'"
     )
@@ -869,7 +869,7 @@ async def request_bot_enhanced(
             detail="Container started but failed to persist meeting state"
         )
 
-    logger.info(f"Bot container {container_id} started successfully for meeting {meeting_id}")
+    logger.debug(f"Bot container {container_id} started successfully for meeting {meeting_id}")
     return MeetingResponse(
         id=meeting_id,
         user_id=current_user.id,
@@ -898,19 +898,18 @@ def get_transcription_service_url(provider: TranscriberProvider) -> str:
     if provider_url_var:
         provider_url = os.getenv(provider_url_var)
         if provider_url:
-            logger.info(f"Using provider-specific URL for {provider.value}: {provider_url}")
+            logger.debug(f"Using provider-specific URL for {provider.value}: {provider_url}")
             return provider_url
-    # Fall back to unified gateway
     gateway_url = os.getenv('TRANSCRIPTION_GATEWAY_URL')
     if gateway_url:
-        logger.info(f"Using unified transcription gateway for {provider.value}: {gateway_url}")
+        logger.debug(f"Using unified transcription gateway for {provider.value}: {gateway_url}")
         return gateway_url
     if provider in [TranscriberProvider.AWS, TranscriberProvider.DEEPGRAM, TranscriberProvider.ELEVENLABS]:
-        logger.info(f"Provider {provider.value} uses SDK, no WebSocket URL needed")
+        logger.debug(f"Provider {provider.value} uses SDK, no WebSocket URL needed")
         return ""
     # Default to WhisperLive only for whisper_live provider
     default_url = os.getenv('WHISPER_LIVE_URL', 'ws://whisperlive.internal/ws')
-    logger.info(f"Using default WhisperLive URL for {provider.value}: {default_url}")
+    logger.debug(f"Using default WhisperLive URL for {provider.value}: {default_url}")
     return default_url
 
 
@@ -926,11 +925,9 @@ def prepare_transcriber_environment(
     env = {
         'TRANSCRIBER_PROVIDER': transcriber_provider.value,
         'TRANSCRIBER_CONFIG': json.dumps(transcriber_config),
-        # S3 configuration
         'S3_BUCKET_NAME': s3_config.bucket_name,
         'S3_REGION': s3_config.region,
         'S3_PREFIX': s3_config.prefix or '',
-
         'AWS_ACCESS_KEY_ID': os.getenv('AWS_ACCESS_KEY_ID', ''),
         'AWS_SECRET_ACCESS_KEY': os.getenv('AWS_SECRET_ACCESS_KEY', ''),
         'AWS_SESSION_TOKEN': os.getenv('AWS_SESSION_TOKEN', ''),  # Required for temporary credentials
@@ -1883,8 +1880,6 @@ async def reconcile_meetings_and_containers():
                         )
                         zombie_meetings_fixed += 1
                         logger.info(f"[Reconciliation] Fixed zombie meeting {meeting.id}")
-
-                        # Trigger post-meeting tasks (S3 upload, webhooks, etc.)
                         asyncio.create_task(run_all_tasks(meeting.id))
                     else:
                         logger.error(

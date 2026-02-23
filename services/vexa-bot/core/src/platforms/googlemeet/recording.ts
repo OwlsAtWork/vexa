@@ -568,8 +568,7 @@ export async function startGoogleRecording(page: Page, botConfig: BotConfig): Pr
                 }
               });
 
-              // Strategy 2: Look in the people panel (sidebar)
-              // Google Meet shows participant names in a specific panel
+              // Strategy 2: Look in the people panel (sidebar). Google Meet shows participant names in a specific panel
               const peoplePanelNames = document.querySelectorAll('[jsname="YPqjbf"]');
               peoplePanelNames.forEach((el: Element) => {
                 const text = (el.textContent || '').trim();
@@ -595,7 +594,6 @@ export async function startGoogleRecording(page: Page, botConfig: BotConfig): Pr
 
               // Deduplicate and filter
               const unique = Array.from(new Set(participants));
-
               // Final filtering: Remove obvious UI text patterns
               return unique.filter(name => {
                 const lower = name.toLowerCase();

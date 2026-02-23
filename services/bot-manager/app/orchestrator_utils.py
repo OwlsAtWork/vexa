@@ -164,8 +164,7 @@ async def start_bot_container(
         native_meeting_id: The platform-specific meeting ID (e.g., 'xyz-abc-pdq').
         language: Optional language code for transcription.
         task: Optional transcription task ('transcribe' or 'translate').
-        transcriber_env: Optional dictionary of transcriber-specific environment variables
-                        (e.g., TRANSCRIBER_PROVIDER, TRANSCRIBER_CONFIG, S3_*, API keys).
+        transcriber_env: Optional dictionary of transcriber-specific environment variables.
 
     Returns:
         A tuple (container_id, connection_id) if successful, None otherwise.
@@ -244,16 +243,12 @@ async def start_bot_container(
 
     # Add transcriber environment variables if provided
     if transcriber_env:
-        logger.info(f"Adding {len(transcriber_env)} transcriber environment variables to container")
+        logger.debug(f"Adding {len(transcriber_env)} transcriber environment variables to container")
         for key, value in transcriber_env.items():
             if value:
                 environment.append(f"{key}={value}")
-                if 'KEY' in key.upper() or 'SECRET' in key.upper():
-                    logger.debug(f"  Added env var: {key}=***")
-                else:
-                    logger.debug(f"  Added env var: {key}={value}")
     else:
-        logger.info("No transcriber environment variables provided, using WhisperLive default")
+        logger.debug("No transcriber environment variables provided, using WhisperLive default")
 
     # Ensure absolute path for URL encoding here as well
     socket_path_relative = DOCKER_HOST.split('//', 1)[1]

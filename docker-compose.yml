@@ -69,8 +69,8 @@ services:
       - DEVICE_TYPE=${DEVICE_TYPE}
       - WHISPER_LIVE_URL=ws://whisperlive-remote:9090/ws  # Direct connection to whisperlive-remote
       - ADMIN_TOKEN=${ADMIN_API_TOKEN}
+      - DEEPGRAM_API_KEY=${DEEPGRAM_API_KEY}
       - ELEVENLABS_API_KEY=${ELEVENLABS_API_KEY}
-      # S3 Configuration for transcript uploads
       - TRANSCRIPT_S3_BUCKET=${TRANSCRIPT_S3_BUCKET}
       - AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY_ID}
       - AWS_SECRET_ACCESS_KEY=${AWS_SECRET_ACCESS_KEY}

@@ -22,7 +22,7 @@ import {
 
 // Modified to use new services - Teams recording functionality
 export async function startTeamsRecording(page: Page, botConfig: BotConfig): Promise<void> {
-  // Create transcriber using factory (respects TRANSCRIBER_PROVIDER env var)
+  // Create transcriber using factory
   const transcriber: TranscriberService = TranscriberFactory.create();
   const provider = transcriber.getProvider();
   log(`[Node.js] Using transcriber: ${provider}`);
@@ -30,7 +30,6 @@ export async function startTeamsRecording(page: Page, botConfig: BotConfig): Pro
   if (!initialized) {
     throw new Error(`Failed to initialize ${provider} transcriber`);
   }
-
   log(`[Node.js] ${provider} transcriber initialized successfully`);
   // For WhisperLive, we need the URL for browser-side WebSocket
   let whisperLiveUrl: string | null = null;
@@ -93,14 +92,10 @@ export async function startTeamsRecording(page: Page, botConfig: BotConfig): Pro
         log(`[Node.js] Received audio chunk ${audioChunkCount} from browser (${audioDataArray.length} samples)`);
       }
 
-      // Check if this chunk contains actual audio (not just silence)
-      // AWS Transcribe requires real speech, not just background noise
+      // Check if this chunk contains actual audio (not just silence). AWS Transcribe requires real speech, not just background noise
       const nonZeroCount = audioDataArray.filter(s => Math.abs(s) > 0.0001).length;
       const maxAmplitude = Math.max(...audioDataArray.map(Math.abs));
-      // Stricter threshold: require max amplitude > 0.05 (about 5% of full scale) for "real" audio
-      // This filters out background noise and very quiet audio that AWS would reject anyway
       const isSilent = maxAmplitude < 0.05;
-
       if (audioChunkCount === 1 || audioChunkCount % 100 === 0) {
         const avgAmplitude = audioDataArray.reduce((sum, s) => sum + Math.abs(s), 0) / audioDataArray.length;
         log(`[Node.js] Audio stats - NonZero: ${nonZeroCount}/${audioDataArray.length} (${(nonZeroCount/audioDataArray.length*100).toFixed(1)}%), Max: ${maxAmplitude.toFixed(6)}, Avg: ${avgAmplitude.toFixed(6)}, Silent: ${isSilent}`);
@@ -113,15 +108,11 @@ export async function startTeamsRecording(page: Page, botConfig: BotConfig): Pro
         const pcmSample = sample < 0 ? sample * 32768 : sample * 32767;
         pcm16Buffer.writeInt16LE(Math.round(pcmSample), i * 2);
       }
-
-      // Validate buffer before sending
       if (pcm16Buffer.length === 0) {
         log(`[Node.js] ERROR: Empty PCM buffer generated, skipping`);
         return;
       }
-
       // Verify PCM16 buffer actually contains audio (not just zeros)
-      // This is CRITICAL because Float32 silence detection can be wrong
       let pcm16HasAudio = false;
       for (let i = 0; i < pcm16Buffer.length; i += 2) {
         const sample = Math.abs(pcm16Buffer.readInt16LE(i));
@@ -131,22 +122,13 @@ export async function startTeamsRecording(page: Page, botConfig: BotConfig): Pro
         }
       }
 
-      // Log first chunk for debugging
-      if (audioChunkCount === 1) {
-        const preview = pcm16Buffer.slice(0, 32).toString('hex');
-        log(`[Node.js] First PCM16 chunk (hex preview): ${preview}`);
-        log(`[Node.js] PCM16 buffer size: ${pcm16Buffer.length} bytes (${audioDataArray.length} samples)`);
-        log(`[Node.js] PCM16 hasAudio check: ${pcm16HasAudio}`);
-      }
-
       try {
         // If AWS not connected yet and we have actual audio in PCM16 format, connect now
-        // Use PCM16 check instead of Float32 isSilent to avoid false positives
         if (!isAwsConnected && pcm16HasAudio) {
-          isAwsConnected = true; // Set flag immediately to prevent race condition
+          isAwsConnected = true;
           log(`[Node.js] First non-silent audio detected! Connecting to ${provider}...`);
 
-          // Start AWS connection asynchronously (don't await - prevents deadlock)
+          // Start AWS connection asynchronously
           transcriber.connect(
             botConfig,
             async (data: any) => {
@@ -381,20 +363,16 @@ export async function startTeamsRecording(page: Page, botConfig: BotConfig): Pro
               if (useNodeBridge) {
                 // Use Node.js bridge for Custom Transcribers (AWS/Deepgram/ElevenLabs)
                 try {
-                  // Convert Float32Array to regular array for JSON serialization
                   const audioArray = Array.from(audioData);
-                  // Send audio to Node.js transcriber
                   await (window as any).sendAudioToNodeTranscriber(audioArray);
                 } catch (error: any) {
                   (window as any).logBot(`Failed to send audio to Node transcriber: ${error.message}`);
                 }
               } else {
-                // Use browser-side WhisperLive WebSocket
-                // Only send after server ready
+                // Use browser-side WhisperLive WebSocket. Only send after server ready
                 if (!whisperLiveService.isReady()) {
                   return;
                 }
-                // Compute simple RMS and peak for diagnostics
                 let sumSquares = 0;
                 let peak = 0;
                 for (let i = 0; i < audioData.length; i++) {
@@ -404,7 +382,6 @@ export async function startTeamsRecording(page: Page, botConfig: BotConfig): Pro
                   if (a > peak) peak = a;
                 }
                 const rms = Math.sqrt(sumSquares / Math.max(1, audioData.length));
-                // Diagnostic: send metadata first
                 whisperLiveService.sendAudioChunkMetadata(audioData.length, 16000);
                 // Send audio data to WhisperLive
                 const success = whisperLiveService.sendAudioData(audioData);

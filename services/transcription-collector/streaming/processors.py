@@ -285,16 +285,15 @@ async def process_stream_message(message_id: str, message_data: Dict[str, Any], 
                      continue
 
                  start_time_key = f"{start_time_float:.3f}"
-
                  mapping_status: str = STATUS_UNKNOWN
                  mapped_speaker_name = None
 
-                 # Priority 1: Use speaker field if already provided by transcriber
+                 # Use speaker field if already provided by transcriber
                  if incoming_speaker:
                     mapped_speaker_name = incoming_speaker
                     mapping_status = "provided"
                     logger.debug(f"[Msg {message_id}/Meet {internal_meeting_id}/Seg {start_time_key}] Using speaker from transcriber: {incoming_speaker}")
-                 # Priority 2: Fall back to Redis-based speaker event mapping (for WhisperLive)
+                 # Fall back to Redis-based speaker event mapping (for WhisperLive)
                  elif session_uid_from_payload:
                     context_log = f"[LiveMap Msg:{message_id}/Meet:{internal_meeting_id}/Seg:{start_time_key}]"
                     mapping_result = await get_speaker_mapping_for_segment(

@@ -245,13 +245,13 @@ async def root():
              },
          })
 # Function signature remains generic for forwarding
-async def request_bot_proxy(request: Request):
+async def request_bot_proxy(request: Request): 
     """Forward request to Bot Manager to start a bot."""
     url = f"{BOT_MANAGER_URL}/bots"
     # forward_request handles reading and passing the body from the original request
     return await forward_request(app.state.http_client, "POST", url, request)
 
-# --- NEW Enhanced Bot Creation with Dynamic Transcriber Selection ---
+# --- Enhanced Bot Creation with Dynamic Transcriber Selection ---
 @app.post("/v2/bots",
          tags=["Bot Management"],
          summary="Request a bot with custom transcriber and S3 config",

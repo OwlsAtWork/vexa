@@ -4,7 +4,7 @@ import { TranscriberService } from './transcriber-factory';
 
 export interface WhisperLiveConfig {
   whisperLiveUrl?: string;
-  transcriptionServiceUrl?: string; // ADDED: Optional transcription service URL for dynamic transcriber selection
+  transcriptionServiceUrl?: string; // Optional transcription service URL for dynamic transcriber selection
 }
 
 export interface WhisperLiveConnection {
@@ -22,28 +22,18 @@ export class WhisperLiveService implements TranscriberService {
     this.config = config;
   }
 
-  /**
-   * Get provider name
-   */
+  /* Get provider name */
   getProvider(): string {
     return 'whisper_live';
   }
 
-  /**
-   * Initialize transcriber (implements TranscriberService interface)
-   */
+  /* Initialize transcriber */
   async initialize(config?: BotConfig): Promise<boolean> {
     const url = await this.initializeInternal();
     return url !== null;
   }
 
-  /**
-   * Initialize transcription service URL with priority:
-   * 1. transcriptionServiceUrl (from botConfig - passed by bot-manager for dynamic transcriber selection)
-   * 2. TRANSCRIPTION_SERVICE_URL (environment variable)
-   * 3. whisperLiveUrl (config parameter)
-   * 4. WHISPER_LIVE_URL (environment variable - backward compatibility)
-   */
+  /* Initialize transcription service URL */
   async initializeInternal(): Promise<string | null> {
     try {
       const allocatedUrl =
@@ -57,17 +47,13 @@ export class WhisperLiveService implements TranscriberService {
         log('[Transcription] No transcription service URL configured');
         return null;
       }
-
       log(`[Transcription] Using transcription service: ${allocatedUrl}`);
-
-      // Store connection info
       this.connection = {
         socket: null,
         isServerReady: false,
         sessionUid: this.generateUUID(),
         allocatedServerUrl: allocatedUrl
       };
-
       return allocatedUrl;
     } catch (error: any) {
       log(`[Transcription] Initialization error: ${error.message}`);
@@ -75,9 +61,7 @@ export class WhisperLiveService implements TranscriberService {
     }
   }
 
-  /**
-   * Connect to transcriber (implements TranscriberService interface)
-   */
+  /* Connect to transcriber */
   async connect(
     config: BotConfig,
     onTranscription: (data: any) => void,
@@ -87,18 +71,14 @@ export class WhisperLiveService implements TranscriberService {
     return this.connectToWhisperLive(config, onTranscription, onError, onClose);
   }
 
-  /**
-   * Send audio to transcriber (implements TranscriberService interface)
-   */
+  /* Send audio to transcriber */
   async sendAudio(socket: any, audioData: Buffer): Promise<void> {
     // Convert Buffer to Float32Array if needed
     const float32Data = audioData as any as Float32Array;
     this.sendAudioData(float32Data);
   }
 
-  /**
-   * Close transcriber connection (implements TranscriberService interface)
-   */
+  /* Close transcriber connection */
   async close(socket: any): Promise<void> {
     await this.cleanup();
   }
@@ -119,7 +99,7 @@ export class WhisperLiveService implements TranscriberService {
 
     try {
       const socket = new WebSocket(this.connection.allocatedServerUrl);
-      
+
       // Set up event handlers
       socket.onopen = () => {
         log(`[WhisperLive] Connected to ${this.connection!.allocatedServerUrl}`);

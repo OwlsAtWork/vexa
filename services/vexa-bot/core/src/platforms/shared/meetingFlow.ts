@@ -40,6 +40,7 @@ export type PlatformStrategies = {
   prepare: (page: Page, botConfig: BotConfig) => Promise<void>;
   startRecording: (page: Page, botConfig: BotConfig) => Promise<void>;
   startRemovalMonitor: (page: Page, onRemoval?: () => void | Promise<void>) => () => void;
+  startMeetingEndMonitor?: (page: Page, onMeetingEnd?: () => void | Promise<void>) => () => void;
   leave: (page: Page | null, botConfig?: BotConfig, reason?: LeaveReason) => Promise<boolean>;
 };
 
@@ -146,23 +147,42 @@ export async function runMeetingFlow(
       // Continue to recording phase even if callback/verification fails
     }
 
-    // Removal monitoring + recording race
+    // Removal & meeting end monitoring + recording race
     let signalRemoval: (() => void) | null = null;
+    let signalMeetingEnd: (() => void) | null = null;
+
     const removalPromise = new Promise<never>((_, reject) => {
       signalRemoval = () => reject(new Error(tokens.removedToken));
     });
     const stopRemoval = strategies.startRemovalMonitor(page, () => { if (signalRemoval) signalRemoval(); });
 
+    // Start meeting end monitor if platform supports it
+    const meetingEndToken = `${platform.toUpperCase()}_MEETING_ENDED`;
+    let stopMeetingEnd: (() => void) | null = null;
+    let meetingEndPromise: Promise<never> | null = null;
+
+    if (strategies.startMeetingEndMonitor) {
+      meetingEndPromise = new Promise<never>((_, reject) => {
+        signalMeetingEnd = () => reject(new Error(meetingEndToken));
+      });
+      stopMeetingEnd = strategies.startMeetingEndMonitor(page, () => { if (signalMeetingEnd) signalMeetingEnd(); });
+    }
+
     try {
-      await Promise.race([
-        strategies.startRecording(page, botConfig),
-        removalPromise
-      ]);
+      const racers = [strategies.startRecording(page, botConfig), removalPromise];
+      if (meetingEndPromise) racers.push(meetingEndPromise);
+      await Promise.race(racers);
 
       // Normal completion
       await gracefulLeaveFunction(page, 0, "normal_completion");
     } catch (error: any) {
       const msg: string = error?.message || String(error);
+
+      // Check for meeting ended (normal end)
+      if (msg === meetingEndToken || msg.includes(meetingEndToken) || msg.includes("MEETING_ENDED")) {
+        await gracefulLeaveFunction(page, 0, "meeting_ended_by_host");
+        return;
+      }
       if (msg === tokens.removedToken || msg.includes(tokens.removedToken)) {
         await gracefulLeaveFunction(page, 0, "removed_by_admin");
         return;
@@ -188,6 +208,7 @@ export async function runMeetingFlow(
       return;
     } finally {
       stopRemoval();
+      if (stopMeetingEnd) stopMeetingEnd();
     }
   } catch (error: any) {
     const msg: string = error?.message || String(error);

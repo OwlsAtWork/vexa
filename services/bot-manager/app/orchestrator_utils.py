@@ -148,7 +148,8 @@ async def start_bot_container(
     user_token: str,
     native_meeting_id: str,
     language: Optional[str],
-    task: Optional[str]
+    task: Optional[str],
+    transcriber_env: Optional[Dict[str, str]] = None
 ) -> Optional[tuple[str, str]]:
     """
     Starts a vexa-bot container via requests_unixsocket AFTER checking user limit.
@@ -163,7 +164,8 @@ async def start_bot_container(
         native_meeting_id: The platform-specific meeting ID (e.g., 'xyz-abc-pdq').
         language: Optional language code for transcription.
         task: Optional transcription task ('transcribe' or 'translate').
-        
+        transcriber_env: Optional dictionary of transcriber-specific environment variables.
+
     Returns:
         A tuple (container_id, connection_id) if successful, None otherwise.
     """
@@ -238,6 +240,15 @@ async def start_bot_container(
         f"WHISPER_LIVE_URL={whisper_live_url_for_bot}", # Use the URL from bot-manager's env
         f"LOG_LEVEL={os.getenv('LOG_LEVEL', 'INFO').upper()}",
     ]
+
+    # Add transcriber environment variables if provided
+    if transcriber_env:
+        logger.debug(f"Adding {len(transcriber_env)} transcriber environment variables to container")
+        for key, value in transcriber_env.items():
+            if value:
+                environment.append(f"{key}={value}")
+    else:
+        logger.debug("No transcriber environment variables provided, using WhisperLive default")
 
     # Ensure absolute path for URL encoding here as well
     socket_path_relative = DOCKER_HOST.split('//', 1)[1]

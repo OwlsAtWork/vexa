@@ -307,7 +307,9 @@ test: check_docker
 			echo "⚠️  WARNING: CPU mode - DEVELOPMENT ONLY"; \
 		fi; \
 	fi
-	@if [ -n "$(MEETING_ID)" ]; then \
+	@if [ -n "$(PLATFORM)" ] && [ -n "$(MEETING_ID)" ]; then \
+		./testing/run_vexa_interaction.sh "$(PLATFORM)" "$(MEETING_ID)"; \
+	elif [ -n "$(MEETING_ID)" ]; then \
 		./testing/run_vexa_interaction.sh "$(MEETING_ID)"; \
 	else \
 		./testing/run_vexa_interaction.sh; \

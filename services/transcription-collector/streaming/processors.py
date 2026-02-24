@@ -268,26 +268,33 @@ async def process_stream_message(message_id: str, message_data: Dict[str, Any], 
                      # WhisperLive provides this; we must propagate it so the UI can observe
                      # partial -> completed transitions (e.g., SAME_OUTPUT_THRESHOLD confirmation).
                      completed_content = bool(segment.get('completed', False))
+                     # Extract speaker field if provided by transcriber
+                     incoming_speaker = segment.get('speaker')
                  except (ValueError, TypeError) as time_err:
                      logger.warning(f"[Msg {message_id}/Meet {internal_meeting_id}] Skipping segment {i} invalid time format: {time_err} - Segment: {segment}")
                      continue
-                
+
                  # Fix inverted timestamps
                  if end_time_float < start_time_float:
                      start_time_float, end_time_float = end_time_float, start_time_float
                      logger.warning(f"[Msg {message_id}/Meet {internal_meeting_id}] Corrected inverted times to start={start_time_float}, end={end_time_float}")
-                
+
                  # Skip zero/negative duration segments
                  if end_time_float - start_time_float < 1e-3:
                      logger.debug(f"[Msg {message_id}/Meet {internal_meeting_id}] Skipping ~zero-length segment: {segment}")
                      continue
-                            
-                 start_time_key = f"{start_time_float:.3f}"
-                 
-                 mapping_status: str = STATUS_UNKNOWN
 
-                 if session_uid_from_payload:
-                    # MODIFIED: Call the new utility function
+                 start_time_key = f"{start_time_float:.3f}"
+                 mapping_status: str = STATUS_UNKNOWN
+                 mapped_speaker_name = None
+
+                 # Use speaker field if already provided by transcriber
+                 if incoming_speaker:
+                    mapped_speaker_name = incoming_speaker
+                    mapping_status = "provided"
+                    logger.debug(f"[Msg {message_id}/Meet {internal_meeting_id}/Seg {start_time_key}] Using speaker from transcriber: {incoming_speaker}")
+                 # Fall back to Redis-based speaker event mapping (for WhisperLive)
+                 elif session_uid_from_payload:
                     context_log = f"[LiveMap Msg:{message_id}/Meet:{internal_meeting_id}/Seg:{start_time_key}]"
                     mapping_result = await get_speaker_mapping_for_segment(
                         redis_c=redis_c,
@@ -300,9 +307,7 @@ async def process_stream_message(message_id: str, message_data: Dict[str, Any], 
                     mapped_speaker_name = mapping_result.get("speaker_name")
                     mapping_status = mapping_result.get("status", STATUS_ERROR) # Default to STATUS_ERROR if not present
                  else:
-                    # This case is now handled inside get_speaker_mapping_for_segment if session_uid is None,
-                    # but keeping explicit handling here is also fine for clarity if session_uid_from_payload is None from the start.
-                    logger.warning(f"[Msg {message_id}/Meet {internal_meeting_id}/Seg {start_time_key}] No session_uid_from_payload. Cannot map speakers.")
+                    logger.warning(f"[Msg {message_id}/Meet {internal_meeting_id}/Seg {start_time_key}] No speaker field and no session_uid_from_payload. Cannot map speakers.")
                     mapping_status = STATUS_UNKNOWN
 
                  # Compute absolute UTC timestamps if session start time is known

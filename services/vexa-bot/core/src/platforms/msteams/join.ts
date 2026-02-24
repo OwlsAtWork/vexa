@@ -101,8 +101,9 @@ export async function joinMicrosoftTeams(page: Page, botConfig: BotConfig): Prom
 
   // Step 1: Navigate to Teams meeting
   log(`Step 1: Navigating to Teams meeting: ${botConfig.meetingUrl}`);
-  await page.goto(botConfig.meetingUrl!, { waitUntil: 'networkidle', timeout: 30000 });
-  await page.waitForTimeout(500);
+  // Using 'domcontentloaded' for faster/more reliable loading
+  await page.goto(botConfig.meetingUrl!, { waitUntil: 'domcontentloaded', timeout: 60000 });
+  await page.waitForTimeout(2000);
   
   try {
     await callJoiningCallback(botConfig);

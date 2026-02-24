@@ -101,7 +101,10 @@ echo_info "Effective ADMIN_API_URL: $ADMIN_API_URL"
 USER_EMAIL="testuser$(date +%s)@example.com"
 USER_NAME="Test User $(date +%s)"
 BOT_NAME="VexaFirstTestBot"
-PLATFORM="google_meet"
+# PLATFORM and NATIVE_MEETING_ID (and optionally PASSCODE for Teams) set below from args or interactive input
+PLATFORM=""
+NATIVE_MEETING_ID=""
+PASSCODE=""
 
 # --- Function to stop the bot --- 
 MEETING_ID_TO_STOP=""
@@ -213,43 +216,121 @@ else
     echo_info "API Token likely created. Parsed Key: $USER_API_KEY (Install jq for better parsing)"
 fi
 
-# --- 3. Request Google Meet ID ---
-if [[ -n "$1" ]]; then
-    # If meeting ID provided as command line argument
-    GOOGLE_MEET_ID="$1"
-    echo_info "Using provided Google Meet ID: $GOOGLE_MEET_ID"
+# --- 3. Select Platform and Get Meeting ID ---
+# First, determine the platform
+if [[ -n "$1" && "$1" =~ ^(google_meet|teams)$ ]]; then
+    PLATFORM="$1"
+    MEETING_ID="$2"
+    echo_info "Using platform: $PLATFORM"
+elif [[ -n "$1" ]]; then
+    # Assume first arg is meeting ID if not a platform name, default to google_meet
+    PLATFORM="google_meet"
+    MEETING_ID="$1"
+    echo_info "Defaulting to platform: $PLATFORM"
 else
-    # Interactive input
-    while true; do
-        read -p "Enter the Google Meet ID (e.g., abc-defg-hij): " GOOGLE_MEET_ID
-        # Basic validation for meet ID format (3 letters - 4 letters - 3 letters)
-        if [[ "$GOOGLE_MEET_ID" =~ ^[a-zA-Z]{3}-[a-zA-Z]{4}-[a-zA-Z]{3}$ ]]; then
-            break
-        else
-            echo_warn "Invalid Google Meet ID format. Please use 'xxx-yyyy-zzz' (e.g., abc-defg-hij)."
-        fi
-    done
+    # Interactive platform selection
+    echo_info "Select meeting platform:"
+    echo "  1) Google Meet"
+    echo "  2) Microsoft Teams"
+    read -p "Enter choice (1 or 2) [default: 1]: " PLATFORM_CHOICE
+    PLATFORM_CHOICE=${PLATFORM_CHOICE:-1}
+
+    case $PLATFORM_CHOICE in
+        1)
+            PLATFORM="google_meet"
+            ;;
+        2)
+            PLATFORM="teams"
+            ;;
+        *)
+            echo_error "Invalid platform choice: $PLATFORM_CHOICE"
+            exit 1
+            ;;
+    esac
+    echo_info "Selected platform: $PLATFORM"
 fi
 
-# Validate the meeting ID format
-if [[ "$GOOGLE_MEET_ID" =~ ^[a-zA-Z]{3}-[a-zA-Z]{4}-[a-zA-Z]{3}$ ]]; then
-    MEETING_ID_TO_STOP="$GOOGLE_MEET_ID" # Set for trap
-    echo_info "Valid Google Meet ID: $GOOGLE_MEET_ID"
+# Now get the meeting ID based on platform
+MEETING_PASSCODE=""
+if [[ -z "$MEETING_ID" ]]; then
+    if [[ "$PLATFORM" == "google_meet" ]]; then
+        # Interactive input for Google Meet
+        while true; do
+            read -p "Enter the Google Meet ID (e.g., abc-defg-hij): " MEETING_ID
+            # Basic validation for meet ID format (3 letters - 4 letters - 3 letters)
+            if [[ "$MEETING_ID" =~ ^[a-zA-Z]{3}-[a-zA-Z]{4}-[a-zA-Z]{3}$ ]]; then
+                break
+            else
+                echo_warn "Invalid Google Meet ID format. Please use 'xxx-yyyy-zzz' (e.g., abc-defg-hij)."
+            fi
+        done
+    elif [[ "$PLATFORM" == "teams" ]]; then
+        # Interactive input for Microsoft Teams
+        while true; do
+            read -p "Enter the Teams Meeting ID (10-15 digits, e.g., 9399697580372): " MEETING_ID
+            # Basic validation for Teams ID format (10-15 digits)
+            if [[ "$MEETING_ID" =~ ^[0-9]{10,15}$ ]]; then
+                break
+            else
+                echo_warn "Invalid Teams Meeting ID format. Please use 10-15 digits only."
+            fi
+        done
+        # Optional: ask for passcode
+        read -p "Enter Teams Meeting Passcode (optional, 8-20 chars): " MEETING_PASSCODE
+    fi
+fi
+
+# Validate the meeting ID format based on platform
+if [[ "$PLATFORM" == "google_meet" ]]; then
+    if [[ "$MEETING_ID" =~ ^[a-zA-Z]{3}-[a-zA-Z]{4}-[a-zA-Z]{3}$ ]]; then
+        MEETING_ID_TO_STOP="$MEETING_ID" # Set for trap
+        echo_info "Valid Google Meet ID: $MEETING_ID"
+    else
+        echo_error "Invalid Google Meet ID format: $MEETING_ID. Expected format: xxx-yyyy-zzz"
+        exit 1
+    fi
+elif [[ "$PLATFORM" == "teams" ]]; then
+    if [[ "$MEETING_ID" =~ ^[0-9]{10,15}$ ]]; then
+        MEETING_ID_TO_STOP="$MEETING_ID" # Set for trap
+        echo_info "Valid Teams Meeting ID: $MEETING_ID"
+        if [[ -n "$MEETING_PASSCODE" ]]; then
+            echo_info "Teams passcode provided: $MEETING_PASSCODE"
+        fi
+    else
+        echo_error "Invalid Teams Meeting ID format: $MEETING_ID. Expected 10-15 digits."
+        exit 1
+    fi
 else
-    echo_error "Invalid Google Meet ID format: $GOOGLE_MEET_ID. Expected format: xxx-yyyy-zzz"
+    echo_error "Unknown platform: $PLATFORM"
     exit 1
 fi
 
 # --- 4. Send Bot to Meeting ---
-echo_info "Requesting bot '$BOT_NAME' for Google Meet ID: $GOOGLE_MEET_ID"
-REQUEST_BOT_PAYLOAD=$(cat <<-END
+echo_info "Requesting bot '$BOT_NAME' for $PLATFORM meeting: $MEETING_ID"
+
+# Build payload based on platform
+if [[ "$PLATFORM" == "teams" && -n "$MEETING_PASSCODE" ]]; then
+    # Teams with passcode
+    REQUEST_BOT_PAYLOAD=$(cat <<-END
 {
   "platform": "$PLATFORM",
-  "native_meeting_id": "$GOOGLE_MEET_ID",
+  "native_meeting_id": "$MEETING_ID",
+  "passcode": "$MEETING_PASSCODE",
   "bot_name": "$BOT_NAME"
 }
 END
 )
+else
+    # Google Meet or Teams without passcode
+    REQUEST_BOT_PAYLOAD=$(cat <<-END
+{
+  "platform": "$PLATFORM",
+  "native_meeting_id": "$MEETING_ID",
+  "bot_name": "$BOT_NAME"
+}
+END
+)
+fi
 
 # Use BASE_URL for user actions
 REQUEST_BOT_RESPONSE=$(curl -s -X POST \
@@ -276,11 +357,15 @@ fi
 
 # Check if the bot request was successful enough to proceed (e.g. status code was 2xx)
 # Curl with -s silences output but not errors. A more robust check would be on HTTP status code, but this is a simple script.
-# We'll assume if USER_API_KEY is set and GOOGLE_MEET_ID is set, the request was likely sent.
+# We'll assume if USER_API_KEY is set and MEETING_ID is set, the request was likely sent.
 
 # --- Wait for bot admission and provide user instructions ---
-echo_info "Bot '$BOT_NAME' has been requested for Google Meet ID: $GOOGLE_MEET_ID"
-echo_warn "Please admit the bot into your Google Meet session now."
+echo_info "Bot '$BOT_NAME' has been requested for $PLATFORM meeting: $MEETING_ID"
+if [[ "$PLATFORM" == "google_meet" ]]; then
+    echo_warn "Please admit the bot into your Google Meet session now."
+elif [[ "$PLATFORM" == "teams" ]]; then
+    echo_warn "Please admit the bot into your Microsoft Teams meeting now."
+fi
 echo_warn "Real-time transcription will begin shortly."
 
 COUNTDOWN_SECONDS=10
@@ -291,8 +376,8 @@ for i in $(seq $COUNTDOWN_SECONDS -1 1); do
 done
 echo "GO!"
 
-# --- 5. Start Real-time Transcription --- 
-echo_info "Starting real-time WebSocket transcription for $PLATFORM/$GOOGLE_MEET_ID... Press Ctrl+C to stop."
+# --- 5. Start Real-time Transcription ---
+echo_info "Starting real-time WebSocket transcription for $PLATFORM/$MEETING_ID... Press Ctrl+C to stop."
 
 # Python dependency already checked above
 
@@ -318,7 +403,7 @@ if [ -f ".venv/bin/python" ]; then
         --ws-url "$WS_URL" \
         --api-key "$USER_API_KEY" \
         --platform "$PLATFORM" \
-        --native-id "$GOOGLE_MEET_ID" &
+        --native-id "$MEETING_ID" &
 else
     echo_error "Virtual environment not found at .venv/bin/python"
     echo_error "Please run 'make setup-env' first to create the virtual environment"

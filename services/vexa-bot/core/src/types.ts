@@ -17,4 +17,5 @@ export type BotConfig = {
   reconnectionIntervalMs?: number,
   meeting_id: number,  // Required, not optional
   botManagerCallbackUrl?: string;
+  transcriptionServiceUrl?: string; // ADDED: Optional transcription service URL for dynamic transcriber selection
 }

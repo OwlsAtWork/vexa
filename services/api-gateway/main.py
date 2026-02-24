@@ -24,6 +24,8 @@ from shared_models.schemas import (
     BotStatusResponse # ADDED: Import response model for documentation
 )
 
+from shared_models.transcriber_schemas import MeetingCreateEnhanced
+
 load_dotenv()
 
 # Configuration - Service endpoints are now mandatory environment variables
@@ -248,6 +250,30 @@ async def request_bot_proxy(request: Request):
     url = f"{BOT_MANAGER_URL}/bots"
     # forward_request handles reading and passing the body from the original request
     return await forward_request(app.state.http_client, "POST", url, request)
+
+# --- Enhanced Bot Creation with Dynamic Transcriber Selection ---
+@app.post("/v2/bots",
+         tags=["Bot Management"],
+         summary="Request a bot with custom transcriber and S3 config",
+         description=""" Enhanced bot creation API that supports dynamic transcriber selection and custom S3 bucket configuration for transcription storage. """,
+         status_code=status.HTTP_201_CREATED,
+         dependencies=[Depends(api_key_scheme)],
+         openapi_extra={
+             "requestBody": {
+                 "content": {
+                     "application/json": {
+                         "schema": MeetingCreateEnhanced.schema()
+                     }
+                 },
+                 "required": True,
+                 "description": "Meeting configuration with transcriber and S3 settings"
+             },
+         })
+async def request_bot_enhanced(request: Request):
+    """ Forward enhanced request to Bot Manager to start a bot with custom transcriber configuration. """
+    url = f"{BOT_MANAGER_URL}/v2/bots"
+    return await forward_request(app.state.http_client, "POST", url, request)
+# --- END Enhanced Bot Creation ---
 
 @app.delete("/bots/{platform}/{native_meeting_id}",
            tags=["Bot Management"],
